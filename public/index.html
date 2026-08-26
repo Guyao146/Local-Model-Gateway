@@ -128,7 +128,7 @@
 
   <dialog id="upstreamDialog">
     <form method="dialog" id="upstreamForm" class="dialog-form">
-      <div class="dialog-heading"><div><span class="section-number">UPSTREAM</span><h2 id="upstreamDialogTitle">添加上游</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+      <div class="dialog-heading"><div><span class="section-number">UPSTREAM</span><h2 id="upstreamDialogTitle">添加上游</h2></div><button type="button" data-dialog-close="upstreamDialog" class="icon-button" aria-label="关闭">×</button></div>
       <input id="upstreamId" type="hidden">
       <label>名称<input id="upstreamName" required placeholder="例如：我的 newapi"></label>
       <label>地址<input id="upstreamBaseUrl" required placeholder="例如：https://api.example.com/v1"></label>
@@ -139,13 +139,13 @@
       <label>API Key<input id="upstreamApiKey" type="password" autocomplete="off" placeholder="新增时必填；编辑时留空表示保留原 Key"></label>
       <label>上游模型列表 <span class="muted">（可选，每行一个）</span><textarea id="upstreamModels" rows="4" placeholder="claude-3-5-sonnet\ngpt-4o"></textarea></label>
       <label class="check-label"><input id="upstreamEnabled" type="checkbox" checked> 启用这个上游</label>
-      <div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button id="saveUpstreamButton" value="default" class="button primary">保存上游</button></div>
+      <div class="dialog-actions"><button type="button" data-dialog-close="upstreamDialog" class="button secondary">取消</button><button id="saveUpstreamButton" value="default" class="button primary">保存上游</button></div>
     </form>
   </dialog>
 
   <dialog id="routeDialog">
     <form method="dialog" id="routeForm" class="dialog-form">
-      <div class="dialog-heading"><div><span class="section-number">ROUTE</span><h2 id="routeDialogTitle">添加路由</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+      <div class="dialog-heading"><div><span class="section-number">ROUTE</span><h2 id="routeDialogTitle">添加路由</h2></div><button type="button" data-dialog-close="routeDialog" class="icon-button" aria-label="关闭">×</button></div>
       <input id="routeId" type="hidden">
       <label>本地模型名<input id="localModel" required placeholder="例如：claude-3-5-sonnet 或 *"></label>
       <label>选择上游<select id="routeUpstreamId" required></select></label>
@@ -155,27 +155,27 @@
       <label>备用上游 <span class="muted">（按顺序尝试；429、5xx 或连接失败时切换）</span><select id="routeFallbackIds" multiple size="4"></select></label>
       <div><label>上游权重 <span class="muted">（加权轮询使用；默认 1）</span></label><div id="routeWeights" class="route-weights"></div></div>
       <label class="check-label"><input id="routeEnabled" type="checkbox" checked> 启用这个路由</label>
-      <div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="default" class="button primary">保存路由</button></div>
+      <div class="dialog-actions"><button type="button" data-dialog-close="routeDialog" class="button secondary">取消</button><button value="default" class="button primary">保存路由</button></div>
     </form>
   </dialog>
 
   <dialog id="keyDialog">
     <form method="dialog" id="keyForm" class="dialog-form">
-      <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>新建本地 Key</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+      <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>新建本地 Key</h2></div><button type="button" data-dialog-close="keyDialog" class="icon-button" aria-label="关闭">×</button></div>
       <label>名称<input id="keyName" required placeholder="例如：桌面 APP"></label>
       <p class="help">留空自动生成。完整 Key 只会在创建成功时显示一次，请及时复制保存。</p>
-      <div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="default" class="button primary">创建 Key</button></div>
+      <div class="dialog-actions"><button type="button" data-dialog-close="keyDialog" class="button secondary">取消</button><button value="default" class="button primary">创建 Key</button></div>
     </form>
   </dialog>
 
   <dialog id="keyEditDialog">
     <form method="dialog" id="keyEditForm" class="dialog-form">
-      <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>编辑本地 Key</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+      <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>编辑本地 Key</h2></div><button type="button" data-dialog-close="keyEditDialog" class="icon-button" aria-label="关闭">×</button></div>
       <input id="editKeyId" type="hidden">
       <label>名称<input id="editKeyName" required></label>
       <label class="check-label"><input id="editKeyEnabled" type="checkbox"> 允许使用这个 Key</label>
       <p class="help">出于安全原因不能在这里查看或修改完整 Key。如需更换密钥，请新建一个 Key 后删除旧 Key。</p>
-      <div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="default" class="button primary">保存修改</button></div>
+      <div class="dialog-actions"><button type="button" data-dialog-close="keyEditDialog" class="button secondary">取消</button><button value="default" class="button primary">保存修改</button></div>
     </form>
   </dialog>
 

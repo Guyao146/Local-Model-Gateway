@@ -36,7 +36,8 @@ function openDialog(dialog) {
 }
 
 function closeDialog(dialog) {
-  if (typeof dialog.close === 'function') dialog.close();
+  if (!dialog) return;
+  if (typeof dialog.close === 'function' && dialog.open) dialog.close();
   else dialog.removeAttribute('open');
 }
 
@@ -513,6 +514,9 @@ $('#addRouteButton').addEventListener('click', () => {
   fillRouteForm();
 });
 $('#addKeyButton').addEventListener('click', () => openDialog($('#keyDialog')));
+document.querySelectorAll('[data-dialog-close]').forEach((button) => {
+  button.addEventListener('click', () => closeDialog(document.getElementById(button.dataset.dialogClose)));
+});
 $('#upstreamForm').addEventListener('submit', saveUpstream);
 $('#routeForm').addEventListener('submit', saveRoute);
 $('#keyForm').addEventListener('submit', createKey);
