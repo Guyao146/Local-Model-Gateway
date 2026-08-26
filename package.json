@@ -1,0 +1,15 @@
+{
+  "name": "local-model-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local OpenAI/Anthropic compatible model gateway for routing requests to configurable upstream providers.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node test/protocol.test.js && node test/routing.test.js && node test/gateway.integration.test.js && node test/stream.integration.test.js && node test/model-selection.integration.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

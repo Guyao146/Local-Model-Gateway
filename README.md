@@ -1,0 +1,208 @@
+# Local Model Gateway
+
+一个运行在本机的轻量模型聚合网关。它不依赖 npm 第三方包，使用 Node.js 内置 HTTP 服务和 `fetch`，可以把本地客户端的 OpenAI / Anthropic 请求转发到多个可配置的上游站点。
+
+## 当前功能
+
+- OpenAI 兼容接口：`POST /v1/chat/completions`、`GET /v1/models`
+- OpenAI Responses 兼容接口：`POST /v1/responses`
+- Anthropic 兼容接口：`POST /v1/messages`
+- OpenAI ↔ Anthropic 请求、响应和 SSE 流式响应转换
+- 流式响应保持统一的响应 ID，支持文本增量、结束事件和上游返回的 usage 统计
+- 后台添加、编辑、删除、测试上游站点
+- 上游协议支持 OpenAI 兼容和 Anthropic；支持 Bearer、`x-api-key`、无鉴权
+- 本地模型名到上游模型名的路由映射，支持 `*` 兜底路由
+- 路由支持备用上游；主上游连接失败、超时、429 或 5xx 时按顺序切换
+- 请求统计和最近请求元数据，可查看成功率、故障转移次数、Token 数量及按上游统计
+- 路由支持故障转移、轮询、加权轮询和随机四种策略
+- OpenAI 兼容上游支持从 `/v1/models` 同步模型列表
+- 模型目录支持按上游分组、展开/收起、搜索和复选框选择
+- 可为每个“上游 + 模型”设置本地别名和默认思考强度
+- 支持从上游模型元数据识别 reasoning/thinking 能力，并转换思考参数
+- 本地 API Key 管理
+- 本地 API Key 支持启用/停用和重命名，至少保留一个可管理的 Key
+- 可配置上游超时、备用尝试次数和切换前等待时间
+- 每次模型请求返回 `x-request-id`，并把同一 ID 传递给上游，便于排查后台日志
+- 上游健康状态和内存熔断：连续失败达到阈值后暂时跳过，冷却后自动半开探测
+- 配置保存在 `data/config.json`，该文件已加入 `.gitignore`
+- 默认只监听 `127.0.0.1`，避免未经配置暴露到局域网
+
+## 启动
+
+需要 Node.js 18 或更高版本（当前服务使用 Node 18+ 内置 `fetch`）。在 Windows PowerShell 中：
+
+```powershell
+cd "C:\Users\guxua\.cline\data\workspaces\chat\local-model-gateway"
+node src/server.js
+```
+
+如果 PowerShell 的执行策略阻止 `npm.ps1`，本项目不需要 npm 安装依赖，直接使用 `node src/server.js` 即可。也可以使用：
+
+```powershell
+npm.cmd start
+```
+
+启动时终端会打印：
+
+- 管理后台 Token：`admin_...`
+- 默认本地 API Key：`sk-local_...`
+
+打开 <http://127.0.0.1:8787/>，输入管理员 Token 后管理配置。
+
+## 配置上游
+
+### sub2api / newapi 类 OpenAI 兼容站点
+
+通常填写：
+
+- 地址：站点的 API 根地址，例如 `https://example.com/v1`
+- 协议：`OpenAI 兼容`
+- 鉴权：`Bearer`
+- API Key：该站点的 Key
+- 模型列表：可选；每行一个
+
+如果站点明确要求 `x-api-key`，把鉴权方式改为 `x-api-key`。
+
+### Claude / Anthropic 上游
+
+填写：
+
+- 地址：站点 API 根地址，例如 `https://example.com` 或 `https://example.com/v1`
+- 协议：`Anthropic`
+- 鉴权：默认 `x-api-key`
+- API Key：该站点的 Key
+
+网关会请求上游的 `/v1/messages`，并自动转换 system、文本、工具调用以及流式事件。
+
+## 配置路由
+
+例如将本地客户端请求的 `claude-3-5-sonnet` 转发为某个上游实际模型：
+
+- 本地模型名：`claude-3-5-sonnet`
+- 上游：选择目标站点
+- 上游模型名：`claude-3-5-sonnet-20241022`
+
+路由优先级：精确路由 → `*` 兜底路由 → 上游模型列表匹配 → 仅有一个启用上游时自动转发。
+
+路由可以配置多个备用上游。非流式请求在主上游连接失败、请求超时、返回 408/425/429 或 5xx 时，会依次尝试备用上游；如果上游已经返回 4xx 参数或鉴权错误，网关不会自动换站点掩盖配置问题。流式请求也只会在建立上游响应之前切换，一旦开始向客户端输出内容就不会中途重试，避免重复生成内容。
+
+路由的分流策略可以选择：
+
+- `failover`：按主上游和备用上游顺序尝试，旧路由默认使用此策略
+- `round_robin`：健康候选上游轮询分配
+- `weighted`：按路由中配置的正整数权重进行平滑加权轮询
+- `random`：从健康候选上游中随机选择
+
+轮询、加权和随机策略仍会在选中的上游失败时尝试本次请求的其它候选；熔断中的上游不会参与分流。策略游标只存在内存中，重启后重新开始。
+
+## 本地客户端调用
+
+### OpenAI SDK / OpenAI 兼容 APP
+
+Base URL 填：
+
+```text
+http://127.0.0.1:8787/v1
+```
+
+API Key 填后台创建的本地 Key，模型名填配置的“本地模型名”。例如：
+
+```bash
+curl http://127.0.0.1:8787/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-local_xxx" ^
+  -d "{\"model\":\"claude-3-5-sonnet\",\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}]}"
+```
+
+### Anthropic 兼容 APP
+
+Base URL 同样填：
+
+```text
+http://127.0.0.1:8787/v1
+```
+
+请求 `POST /v1/messages`，使用本地 API Key 作为 `x-api-key` 或 Bearer Token。网关会根据模型路由选择上游。
+
+### OpenAI Responses API
+
+支持常见的 Responses 请求字段 `input`、`instructions`、`max_output_tokens`、`tools` 和 `stream`。请求会先转换为网关内部的 Chat Completions 格式，再按路由转发到 OpenAI 兼容或 Anthropic 上游。非流式示例：
+
+```bash
+curl http://127.0.0.1:8787/v1/responses ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Bearer sk-local_xxx" ^
+  -d "{\"model\":\"gpt-4o\",\"instructions\":\"Be concise\",\"input\":\"你好\",\"max_output_tokens\":100}"
+```
+
+Responses 流式请求会返回 `response.created`、`response.output_text.delta`、`response.output_text.done` 和 `response.completed` 等 SSE 事件。当前版本重点兼容文本输出；如果上游在流中返回 usage，网关会同步到后台统计。复杂的 Responses 专有事件和部分高级工具事件会在后续继续扩展。
+
+## 配置备份和恢复
+
+后台“配置备份”区域可以导出完整 JSON 配置，也可以从备份文件导入上游和路由。导入默认保留当前机器的管理员 Token 和本地 API Key，防止导入后后台无法登录；备份中的完整上游 API Key 会恢复，掩码 Key 会尝试使用当前相同上游 ID 的 Key。监听地址或端口导入后需要重启服务才会生效。
+
+## 请求统计和模型同步
+
+后台的“请求统计”区域会显示请求总数、成功率、故障转移次数、输入/输出/总 Token、按上游统计以及最近 200 条请求元数据。日志不会保存请求内容、请求头、API Key 或上游完整地址。可以在后台点击“清空统计”。统计数据保存在 `data/metrics.json`，与上游配置分开保存。
+
+OpenAI 兼容上游卡片提供“同步模型”按钮，会调用该站点的 `/v1/models`，用返回的模型 ID 更新上游模型列表。Anthropic 上游通常没有标准模型列表接口，需要手工填写模型。
+
+## 模型目录和本地模型选择
+
+后台“本地模型选择”区域会按上游站点分组展示模型。可以：
+
+- 点击“拉取全部模型”尝试从所有启用上游的 `/v1/models` 获取模型；不提供该接口的 Anthropic 站点继续使用上游表单中的手工模型
+- 使用搜索框按站点名、模型 ID 或显示名筛选
+- 点击站点标题展开或收起，也可以“全部展开/全部收起”
+- 勾选要暴露给本地 APP 的模型
+- 给相同模型设置不同的本地别名，例如 `claude-sonnet-a`、`claude-sonnet-b`
+- 为每个模型设置默认思考强度：自动、关闭、低、中、高
+
+点击“保存勾选”后，网关会自动创建或更新选择器管理的本地路由；原有手工路由不会被覆盖。进入选择器模式后，`/v1/models` 只展示勾选的本地模型和手工路由，不再展示未勾选的上游原始模型。取消所有勾选也会生效，表示只保留手工路由。
+
+思考强度的转换规则：
+
+- OpenAI 兼容上游：低/中/高转换为 `reasoning_effort: low/medium/high`
+- Anthropic 上游：低/中/高转换为 `thinking: { type: "enabled", budget_tokens: 2048/4096/8192 }`
+- 自动：不主动添加思考参数
+- 上游明确声明不支持思考时：不会添加思考参数
+- 上游能力未知时：后台仍允许配置；如果客户端没有显式思考参数，网关会按选择的强度尝试发送
+- 客户端请求显式提供 `reasoning_effort` 或 `thinking` 时，优先使用客户端值
+
+网关会识别常见的模型能力字段，包括 `supports_thinking`、`supports_reasoning`、`thinking_levels`、`reasoning_effort`、`capabilities.thinking`、`supported_parameters` 等；部分常见 Claude 3.7/4、o1/o3/o4、GPT-5 模型也会按模型名做保守推断。不同站点的私有字段可能需要后续适配。
+
+## 可靠性设置和 Key 管理
+
+后台“可靠性设置”可以调整：
+
+- 上游超时：1000 到 3600000 毫秒，默认 600000 毫秒
+- 最大备用尝试次数：0 表示不限制；1 表示主上游失败后最多再尝试 1 个备用
+- 切换前等待：0 到 30000 毫秒
+- 熔断失败阈值：1 到 20 次，默认 3 次
+- 熔断冷却时间：1000 到 3600000 毫秒，默认 60000 毫秒
+- 最大并发请求数：0 表示不限制，范围 0 到 1000
+- 每 Key 每分钟请求数：0 表示不限制，范围 0 到 10000
+
+本地 Key 可以在后台编辑名称、启用或停用。停用会立即使该 Key 的模型请求返回 401；为了避免误锁后台，系统不允许删除最后一个本地 Key。
+
+后台上游卡片会显示健康状态、连续失败次数和熔断冷却时间。熔断状态只存在内存中，网关重启后会清除；也可以点击“重置状态”立即恢复该上游。熔断失败阈值默认是 3 次，冷却时间默认是 60000 毫秒。
+
+每次 `/v1/chat/completions`、`/v1/messages` 或 `/v1/responses` 请求都会返回 `x-request-id`。如果客户端自己提供符合格式的 `x-request-id`，网关会沿用它并传给上游；否则自动生成一个。后台请求日志也会保存这个 ID。
+
+限流只作用于模型调用接口，不影响 `/v1/models` 和管理接口。并发限制是全局模型请求数；每分钟限制按本地 API Key 独立计算。被拒绝请求返回 HTTP 429、`Retry-After` 和 `x-request-id`，不会消耗并发槽或每分钟配额。
+
+## 环境变量
+
+- `HOST`：监听地址，默认 `127.0.0.1`
+- `PORT`：监听端口，默认 `8787`
+- `LOCAL_MODEL_GATEWAY_DATA_DIR`：可选，指定配置数据目录；默认是项目下的 `data`
+
+如果确实需要让局域网其它设备访问，可以用 `HOST=0.0.0.0` 启动，但请务必在防火墙、网络环境和本地 API Key 方面做好保护。
+
+## 注意事项
+
+- `data/config.json` 含有管理员 Token、上游 API Key 和本地 API Key，请不要提交或分享。
+- `data/metrics.json` 只包含脱敏请求元数据和 Token 数字，不包含请求内容或密钥；仍建议不要分享运行数据目录。
+- 后台返回的已有密钥只会显示掩码；新建本地 Key 时完整值只展示一次。
+- 第一版按最常见的 OpenAI Chat Completions 与 Anthropic Messages 协议实现，复杂的供应商私有字段、图片 URL 的特殊格式、部分高级工具参数可能需要后续适配。
+- 目前没有余额监控、计费统计和多用户权限，这些可以在后续需求中继续补充。

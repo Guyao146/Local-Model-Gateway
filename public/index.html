@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Model Gateway</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">LOCAL MODEL GATEWAY</div>
+        <h1>本地模型网关</h1>
+        <p class="subtitle">统一管理上游站点，把 OpenAI / Claude 请求路由到你的模型服务。</p>
+      </div>
+      <div class="status-pill"><span class="status-dot"></span><span id="healthText">检查服务中</span></div>
+    </header>
+
+    <section class="notice">
+      <strong>首次使用</strong>
+      <span>在服务启动终端复制管理员 Token，粘贴到下方后点击“载入配置”。默认只监听本机地址。</span>
+    </section>
+
+    <section class="panel auth-panel">
+      <div class="panel-heading">
+          <div><span class="section-number">07</span><h2>请求统计</h2></div>
+        <span class="muted">仅用于管理后台，不是模型调用 Key</span>
+      </div>
+      <div class="inline-form">
+        <label class="grow">管理员 Token<input id="adminToken" type="password" autocomplete="off" placeholder="粘贴启动时打印的 admin_... Token"></label>
+        <button id="loadButton" class="button primary">载入配置</button>
+        <button id="rotateTokenButton" class="button danger-outline" disabled>轮换 Token</button>
+      </div>
+      <div id="authMessage" class="form-message"></div>
+    </section>
+
+    <div id="dashboard" class="dashboard hidden">
+      <section class="panel">
+        <div class="panel-heading">
+          <div><span class="section-number">02</span><h2>上游站点</h2></div>
+          <button id="addUpstreamButton" class="button primary">＋ 添加上游</button>
+        </div>
+        <p class="help">OpenAI 兼容协议适用于 sub2api / newapi 常见接口；Anthropic 协议会使用 <code>/v1/messages</code>。可测试连接，并查看上游熔断状态。</p>
+        <div id="upstreamList" class="card-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div><span class="section-number">03</span><h2>模型路由</h2></div>
+          <button id="addRouteButton" class="button primary">＋ 添加路由</button>
+        </div>
+        <p class="help">精确匹配优先；也可以把本地模型名写为 <code>*</code> 作为兜底路由。只有一个上游时可不配路由。</p>
+        <div id="routeList" class="card-list"></div>
+      </section>
+
+      <section class="panel model-catalog-panel">
+        <div class="panel-heading">
+          <div><span class="section-number">04</span><h2>本地模型选择</h2></div>
+          <div class="panel-actions"><button id="syncAllModelsButton" class="button secondary">拉取全部模型</button><button id="saveModelSelectionsButton" class="button primary">保存勾选</button></div>
+        </div>
+        <p class="help">按站点展开模型，勾选后会暴露到本地 API。可以为同名模型设置本地别名，并选择默认思考强度。Anthropic 站点通常需要手工填写模型。</p>
+        <div class="model-toolbar"><input id="modelCatalogSearch" type="search" placeholder="搜索站点或模型名称"><label class="check-label"><input id="showThinkingModelsOnly" type="checkbox"> 只看支持思考的模型</label><button id="expandAllModelsButton" class="text-button">全部展开</button><button id="collapseAllModelsButton" class="text-button">全部收起</button></div>
+        <div id="modelCatalogList" class="model-catalog-list"></div>
+        <div id="modelSelectionMessage" class="form-message"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div><span class="section-number">05</span><h2>本地调用 Key</h2></div>
+          <button id="addKeyButton" class="button primary">＋ 新建 Key</button>
+        </div>
+        <p class="help">本地 APP 调用时使用这里的 Key。请求头可用 <code>Authorization: Bearer ...</code> 或 <code>x-api-key: ...</code>。</p>
+        <div id="keyList" class="key-list"></div>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-heading">
+          <div><span class="section-number">06</span><h2>可靠性设置</h2></div>
+          <button id="saveSettingsButton" class="button primary">保存设置</button>
+        </div>
+        <p class="help">控制上游请求等待时间和故障转移行为。最大备用尝试次数为 0 时表示不限制，设置修改立即保存。</p>
+        <div class="settings-grid">
+          <label>上游超时（毫秒）<input id="upstreamTimeoutMs" type="number" min="1000" max="3600000" step="1000"></label>
+          <label>最大备用尝试次数<input id="maxFallbackAttempts" type="number" min="0" max="12" step="1"></label>
+          <label>切换前等待（毫秒）<input id="retryDelayMs" type="number" min="0" max="30000" step="100"></label>
+          <label>熔断失败阈值<input id="circuitBreakerFailureThreshold" type="number" min="1" max="20" step="1"></label>
+          <label>熔断冷却（毫秒）<input id="circuitBreakerCooldownMs" type="number" min="1000" max="3600000" step="1000"></label>
+          <label>最大并发请求数<input id="maxConcurrentRequests" type="number" min="0" max="1000" step="1"></label>
+          <label>每 Key 每分钟请求数<input id="requestsPerMinute" type="number" min="0" max="10000" step="1"></label>
+        </div>
+        <div id="settingsMessage" class="form-message"></div>
+      </section>
+
+      <section class="panel endpoint-panel">
+        <div class="panel-heading">
+          <div><span class="section-number">07</span><h2>请求统计</h2></div>
+          <button id="clearMetricsButton" class="button danger-outline">清空统计</button>
+        </div>
+        <div id="statsGrid" class="stats-grid"></div>
+        <div class="subheading-row"><h3>按上游统计</h3></div>
+        <div id="upstreamStats" class="upstream-stats"></div>
+        <div class="subheading-row"><h3>最近请求</h3><span class="muted">最多保留最近 200 条，仅记录元数据</span></div>
+        <div class="table-wrap"><table><thead><tr><th>时间</th><th>模型</th><th>策略</th><th>上游</th><th>状态</th><th>耗时</th><th>Token</th><th>结果</th></tr></thead><tbody id="requestLogBody"></tbody></table></div>
+        <div id="metricsEmpty" class="empty hidden">还没有请求记录。</div>
+      </section>
+
+      <section class="panel endpoint-panel">
+        <div class="panel-heading">
+          <div><span class="section-number">08</span><h2>配置备份</h2></div>
+          <div class="panel-actions"><button id="exportConfigButton" class="button secondary">导出配置</button><button id="importConfigButton" class="button primary">导入配置</button><input id="configFileInput" type="file" accept="application/json,.json" hidden></div>
+        </div>
+        <p class="help">导出文件包含管理员 Token、本地 Key 和上游 API Key，请只保存到安全位置。导入默认保留本机当前管理员 Token 和本地 Key，避免导入后后台失去访问。</p>
+      </section>
+
+      <section class="panel endpoint-panel">
+        <div class="panel-heading">
+          <div><span class="section-number">09</span><h2>本地接口</h2></div>
+        </div>
+        <div class="endpoint-grid">
+          <div><span>OpenAI Base URL</span><code id="openaiEndpoint"></code></div>
+          <div><span>Anthropic Base URL</span><code id="anthropicEndpoint"></code></div>
+          <div><span>模型列表</span><code id="modelsEndpoint"></code></div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="upstreamDialog">
+    <form method="dialog" id="upstreamForm" class="dialog-form">
+      <div class="dialog-heading"><div><span class="section-number">UPSTREAM</span><h2 id="upstreamDialogTitle">添加上游</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+      <input id="upstreamId" type="hidden">
+      <label>名称<input id="upstreamName" required placeholder="例如：我的 newapi"></label>
+      <label>地址<input id="upstreamBaseUrl" required placeholder="例如：https://api.example.com/v1"></label>
+      <div class="two-columns">
+        <label>协议<select id="upstreamProtocol"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select></label>
+        <label>鉴权方式<select id="upstreamAuthType"><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option><option value="none">不添加鉴权</option></select></label>
+      </div>
+      <label>API Key<input id="upstreamApiKey" type="password" autocomplete="off" placeholder="新增时必填；编辑时留空表示保留原 Key"></label>
+      <label>上游模型列表 <span class="muted">（可选，每行一个）</span><textarea id="upstreamModels" rows="4" placeholder="claude-3-5-sonnet\ngpt-4o"></textarea></label>
+      <label class="check-label"><input id="upstreamEnabled" type="checkbox" checked> 启用这个上游</label>
+      <div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button id="saveUpstreamButton" value="default" class="button primary">保存上游</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="routeDialog">
+    <form method="dialog" id="routeForm" class="dialog-form">
+      <div class="dialog-heading"><div><span class="section-number">ROUTE</span><h2 id="routeDialogTitle">添加路由</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+      <input id="routeId" type="hidden">
+      <label>本地模型名<input id="localModel" required placeholder="例如：claude-3-5-sonnet 或 *"></label>
+      <label>选择上游<select id="routeUpstreamId" required></select></label>
+      <label>上游模型名<input id="routeUpstreamModel" required placeholder="例如：claude-3-5-sonnet-20241022"></label>
+      <label>默认思考强度<select id="routeThinkingLevel"><option value="auto">自动（跟随客户端/上游默认）</option><option value="off">关闭</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+      <label>分流策略<select id="routeStrategy"><option value="failover">故障转移（按顺序）</option><option value="round_robin">轮询</option><option value="weighted">加权轮询</option><option value="random">随机</option></select></label>
+      <label>备用上游 <span class="muted">（按顺序尝试；429、5xx 或连接失败时切换）</span><select id="routeFallbackIds" multiple size="4"></select></label>
+      <div><label>上游权重 <span class="muted">（加权轮询使用；默认 1）</span></label><div id="routeWeights" class="route-weights"></div></div>
+      <label class="check-label"><input id="routeEnabled" type="checkbox" checked> 启用这个路由</label>
+      <div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="default" class="button primary">保存路由</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="keyDialog">
+    <form method="dialog" id="keyForm" class="dialog-form">
+      <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>新建本地 Key</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+      <label>名称<input id="keyName" required placeholder="例如：桌面 APP"></label>
+      <p class="help">留空自动生成。完整 Key 只会在创建成功时显示一次，请及时复制保存。</p>
+      <div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="default" class="button primary">创建 Key</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="keyEditDialog">
+    <form method="dialog" id="keyEditForm" class="dialog-form">
+      <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>编辑本地 Key</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+      <input id="editKeyId" type="hidden">
+      <label>名称<input id="editKeyName" required></label>
+      <label class="check-label"><input id="editKeyEnabled" type="checkbox"> 允许使用这个 Key</label>
+      <p class="help">出于安全原因不能在这里查看或修改完整 Key。如需更换密钥，请新建一个 Key 后删除旧 Key。</p>
+      <div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="default" class="button primary">保存修改</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
