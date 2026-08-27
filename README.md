@@ -20,6 +20,8 @@
 - 模型目录支持按上游分组、展开/收起、搜索和复选框选择
 - 可为每个“上游 + 模型”设置本地别名和默认思考强度
 - 支持从上游模型元数据识别 reasoning/thinking 能力，并转换思考参数
+- 管理后台按访问来源认证：本机回环访问免认证，远程访问使用 Authentik OIDC
+- OIDC 使用 Authorization Code + PKCE、state、nonce、JWKS 签名校验和 HttpOnly 会话
 - 本地 API Key 管理
 - 本地 API Key 支持启用/停用和重命名，至少保留一个可管理的 Key
 - 可配置上游超时、备用尝试次数和切换前等待时间
@@ -43,12 +45,75 @@ node src/server.js
 npm.cmd start
 ```
 
-启动时终端会打印：
+启动时终端会打印默认本地 API Key：`sk-local_...`。打开 <http://127.0.0.1:8787/> 后，本机回环访问会自动进入后台，不需要输入任何管理凭据。
 
-- 管理后台 Token：`admin_...`
-- 默认本地 API Key：`sk-local_...`
+管理认证与模型调用认证彼此独立：
 
-打开 <http://127.0.0.1:8787/>，输入管理员 Token 后管理配置。
+- 管理后台和 `/api/admin/*`：本机回环访问免认证；远程访问必须通过 Authentik OIDC
+- `/v1/*` 模型接口：无论本机还是远程，仍然必须使用后台创建的本地 API Key
+
+## Authentik OIDC 远程管理认证
+
+### 1. 在 Authentik 创建 Provider 和 Application
+
+创建一个 OAuth2/OpenID Provider，并建议使用：
+
+- Client type：`Confidential`
+- Authorization flow：`Authorization Code`
+- Redirect URI：你的公网网关地址加 `/auth/oidc/callback`，例如 `https://gateway.example.com/auth/oidc/callback`
+- Scopes：`openid profile email`
+- Signing Key：建议选择证书密钥，让 ID Token 使用非对称签名并通过 JWKS 校验
+- Encryption Key：不要配置；当前网关验证签名 JWT，不支持加密的 JWE ID Token
+
+然后创建 Authentik Application 并绑定该 Provider。哪些用户或组能进入后台，应通过 Authentik Application 的 Policy/Binding 控制；只要用户能通过这个 Application 的认证，就拥有网关管理权限。
+
+Issuer URL 使用该 Application 的 OIDC issuer，通常格式为：
+
+```text
+https://auth.example.com/application/o/<application-slug>
+```
+
+不要在 `AUTHENTIK_ISSUER_URL` 末尾填写 `/.well-known/openid-configuration`，网关会自动请求 discovery 地址。
+
+### 2. 配置环境变量
+
+OIDC Client Secret 只从环境变量读取，不会写入 `data/config.json` 或 Git。Windows PowerShell 示例：
+
+```powershell
+$env:HOST = "0.0.0.0"
+$env:AUTHENTIK_ISSUER_URL = "https://auth.example.com/application/o/local-model-gateway"
+$env:AUTHENTIK_CLIENT_ID = "在 Authentik 中生成的 Client ID"
+$env:AUTHENTIK_CLIENT_SECRET = "在 Authentik 中生成的 Client Secret"
+$env:AUTHENTIK_REDIRECT_URI = "https://gateway.example.com/auth/oidc/callback"
+node src/server.js
+```
+
+远程用户访问 `https://gateway.example.com/` 时会自动跳转 Authentik。认证成功后，网关验证 discovery、issuer、audience、过期时间、state、nonce、PKCE 和 ID Token 签名，并创建仅服务端保存的 `HttpOnly` 会话。服务重启后远程会话失效，需要重新登录。
+
+### 3. 反向代理与来源判断
+
+网关默认只根据 TCP socket 的来源地址判断本地或远程，不会直接信任客户端发送的 `X-Forwarded-For`。如果使用 Nginx、Caddy 或 Traefik 反向代理，必须把代理实际连接网关时使用的 IP 明确加入 `TRUSTED_PROXY_ADDRESSES`，多个地址用逗号分隔。例如代理与网关都在本机：
+
+```powershell
+$env:TRUSTED_PROXY_ADDRESSES = "127.0.0.1,::1"
+```
+
+反向代理必须覆盖而不是盲目透传客户端提供的来源头。例如 Nginx：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $remote_addr;
+}
+```
+
+如果不使用反向代理、远程客户端直接连接网关，不要设置 `TRUSTED_PROXY_ADDRESSES`。该变量只接受精确 IP 地址，不接受主机名或 CIDR。错误地信任客户端可以直接连接的地址会造成认证绕过风险。
+
+> 注意：如果同机反向代理连接 `127.0.0.1`，但没有配置 `TRUSTED_PROXY_ADDRESSES`，网关看到转发头时会拒绝把该连接当作本地访问，并要求 Authentik，防止远程请求被错误地免认证。
+
+本机免认证访问请使用 `http://127.0.0.1:8787/`、`http://localhost:8787/` 或 IPv6 回环地址。管理后台会校验回环 Host、Origin 和浏览器来源信息，防止 DNS Rebinding 或跨站页面利用本机免认证权限修改配置。
 
 ## 配置上游
 
@@ -140,7 +205,7 @@ Responses 流式请求会返回 `response.created`、`response.output_text.delta
 
 ## 配置备份和恢复
 
-后台“配置备份”区域可以导出完整 JSON 配置，也可以从备份文件导入上游和路由。导入默认保留当前机器的管理员 Token 和本地 API Key，防止导入后后台无法登录；备份中的完整上游 API Key 会恢复，掩码 Key 会尝试使用当前相同上游 ID 的 Key。监听地址或端口导入后需要重启服务才会生效。
+后台“配置备份”区域可以导出完整 JSON 配置，也可以从备份文件导入上游和路由。导入默认保留当前机器的本地 API Key；备份中的完整上游 API Key 会恢复，掩码 Key 会尝试使用当前相同上游 ID 的 Key。旧备份中的管理员 Token 字段仅为格式兼容保留，不再参与后台认证。监听地址或端口导入后需要重启服务才会生效。
 
 ## 请求统计和模型同步
 
@@ -197,12 +262,22 @@ Responses 流式请求会返回 `response.created`、`response.output_text.delta
 - `HOST`：监听地址，默认 `127.0.0.1`
 - `PORT`：监听端口，默认 `8787`
 - `LOCAL_MODEL_GATEWAY_DATA_DIR`：可选，指定配置数据目录；默认是项目下的 `data`
+- `AUTHENTIK_ISSUER_URL`：Authentik Application 的 OIDC issuer URL
+- `AUTHENTIK_CLIENT_ID`：Authentik OAuth2/OpenID Provider 的 Client ID
+- `AUTHENTIK_CLIENT_SECRET`：Confidential Provider 的 Client Secret
+- `AUTHENTIK_REDIRECT_URI`：完整回调地址，必须以 `/auth/oidc/callback` 结尾并与 Authentik 配置一致
+- `AUTHENTIK_SCOPES`：可选，默认 `openid profile email`
+- `AUTHENTIK_TOKEN_AUTH_METHOD`：可选，`client_secret_basic` 或 `client_secret_post`；默认按 discovery 自动选择
+- `AUTHENTIK_SESSION_TTL_SECONDS`：可选，远程管理会话最长有效期，默认 28800 秒，范围 300 到 604800
+- `AUTHENTIK_COOKIE_SECURE`：可选；默认根据回调 URL 是否为 HTTPS 自动决定，生产环境不要关闭
+- `AUTHENTIK_POST_LOGOUT_REDIRECT_URI`：可选，Authentik 登出后的返回地址
+- `TRUSTED_PROXY_ADDRESSES`：可选，允许提供 `X-Forwarded-For` 的反向代理精确 IP 列表
 
-如果确实需要让局域网其它设备访问，可以用 `HOST=0.0.0.0` 启动，但请务必在防火墙、网络环境和本地 API Key 方面做好保护。
+如果需要让其它设备访问，可以用 `HOST=0.0.0.0` 启动。远程管理访问必须完整配置 Authentik；模型接口仍需使用本地 API Key，并建议同时使用 HTTPS、防火墙和网络访问控制。
 
 ## 注意事项
 
-- `data/config.json` 含有管理员 Token、上游 API Key 和本地 API Key，请不要提交或分享。
+- `data/config.json` 含有上游 API Key、本地 API Key 和旧版兼容字段，请不要提交或分享；Authentik Client Secret 不会写入该文件。
 - `data/metrics.json` 只包含脱敏请求元数据和 Token 数字，不包含请求内容或密钥；仍建议不要分享运行数据目录。
 - 后台返回的已有密钥只会显示掩码；新建本地 Key 时完整值只展示一次。
 - 第一版按最常见的 OpenAI Chat Completions 与 Anthropic Messages 协议实现，复杂的供应商私有字段、图片 URL 的特殊格式、部分高级工具参数可能需要后续适配。

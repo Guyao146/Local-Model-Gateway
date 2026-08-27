@@ -6,13 +6,16 @@ function escapeHtml(value) {
 }
 
 function adminHeaders() {
-  return { 'Content-Type': 'application/json', 'X-Admin-Token': $('#adminToken').value.trim() };
+  return { 'Content-Type': 'application/json' };
 }
 
 async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { ...adminHeaders(), ...(options.headers || {}) } });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error?.message || `请求失败（${response.status}）`);
+  if (!response.ok) {
+    if (response.status === 401 && body.error?.loginUrl) window.location.assign(body.error.loginUrl);
+    throw new Error(body.error?.message || `请求失败（${response.status}）`);
+  }
   return body;
 }
 
@@ -181,7 +184,7 @@ function renderMetrics() {
 async function loadConfig() {
   setMessage('正在读取配置…');
   try {
-    state.config = await api('/api/admin/config', { headers: { 'X-Admin-Token': $('#adminToken').value.trim() } });
+    state.config = await api('/api/admin/config');
     try {
       state.metrics = await api('/api/admin/metrics');
     } catch {
@@ -198,12 +201,38 @@ async function loadConfig() {
       state.catalog = null;
     }
     $('#dashboard').classList.remove('hidden');
-    $('#rotateTokenButton').disabled = false;
     setMessage('配置已载入。', 'success');
     render();
   } catch (error) {
     $('#dashboard').classList.add('hidden');
-    $('#rotateTokenButton').disabled = true;
+    setMessage(error.message, 'error');
+  }
+}
+
+async function initializeAdminAccess() {
+  try {
+    const response = await fetch('/auth/status', { headers: { Accept: 'application/json' } });
+    const status = await response.json().catch(() => ({}));
+    if (!response.ok || !status.authenticated) {
+      $('#adminIdentity').textContent = '尚未认证';
+      $('#authModeLabel').textContent = status.error?.message || '需要 Authentik 登录';
+      setMessage(status.error?.message || `认证状态检查失败（${response.status}）`, 'error');
+      return;
+    }
+    if (status.mode === 'local') {
+      $('#adminIdentity').textContent = '本机管理员';
+      $('#authModeLabel').textContent = '本机回环访问 · 无需认证';
+      $('#logoutButton').classList.add('hidden');
+    } else {
+      const identity = status.user?.name || status.user?.username || status.user?.email || 'Authentik 用户';
+      $('#adminIdentity').textContent = identity;
+      $('#authModeLabel').textContent = `Authentik 已认证 · ${status.user?.username || identity}`;
+      $('#logoutButton').classList.remove('hidden');
+    }
+    await loadConfig();
+  } catch (error) {
+    $('#adminIdentity').textContent = '认证状态不可用';
+    $('#authModeLabel').textContent = '无法连接管理认证接口';
     setMessage(error.message, 'error');
   }
 }
@@ -472,15 +501,6 @@ async function createKey(event) {
   } catch (error) { toast(error.message, 'error'); }
 }
 
-async function rotateAdminToken() {
-  if (!window.confirm('轮换后当前管理员 Token 会立即失效，确定继续吗？')) return;
-  try {
-    const result = await api('/api/admin/admin-token/rotate', { method: 'POST', body: '{}' });
-    $('#adminToken').value = result.adminToken;
-    toast('管理员 Token 已轮换，新 Token 已填入输入框');
-  } catch (error) { toast(error.message, 'error'); }
-}
-
 async function clearMetrics() {
   if (!window.confirm('确定清空所有请求统计和最近日志吗？此操作不可撤销。')) return;
   try {
@@ -527,7 +547,7 @@ function importConfigFile(file) {
     try {
       const backup = JSON.parse(reader.result);
       if (!backup.config && !backup.upstreams) throw new Error('文件不是有效的网关配置备份');
-      if (!window.confirm('确定导入这个配置吗？当前的上游和路由会被替换；当前管理员 Token 和本地 Key 会保留。')) return;
+      if (!window.confirm('确定导入这个配置吗？当前的上游和路由会被替换；当前本地 Key 会保留。')) return;
       await api('/api/admin/config/import', { method: 'POST', body: JSON.stringify({ ...backup, preserveCredentials: true }) });
       await loadConfig();
       toast('配置已导入；监听地址或端口变更需要重启服务后生效');
@@ -549,8 +569,7 @@ async function checkHealth() {
 }
 
 $('#loadButton').addEventListener('click', loadConfig);
-$('#adminToken').addEventListener('keydown', (event) => { if (event.key === 'Enter') loadConfig(); });
-$('#rotateTokenButton').addEventListener('click', rotateAdminToken);
+$('#logoutButton').addEventListener('click', () => { window.location.assign('/auth/logout'); });
 $('#addUpstreamButton').addEventListener('click', () => fillUpstreamForm());
 $('#addRouteButton').addEventListener('click', () => {
   if (!state.config.upstreams.length) return toast('请先添加至少一个上游站点', 'error');
@@ -587,3 +606,4 @@ $('#configFileInput').addEventListener('change', (event) => {
   event.target.value = '';
 });
 checkHealth();
+initializeAdminAccess();

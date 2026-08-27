@@ -18,19 +18,19 @@
     </header>
 
     <section class="notice">
-      <strong>首次使用</strong>
-      <span>在服务启动终端复制管理员 Token，粘贴到下方后点击“载入配置”。默认只监听本机地址。</span>
+      <strong>访问保护</strong>
+      <span>本机回环访问自动放行；远程管理访问必须通过 Authentik OIDC 登录。模型调用接口仍使用本地 API Key。</span>
     </section>
 
     <section class="panel auth-panel">
       <div class="panel-heading">
-          <div><span class="section-number">07</span><h2>请求统计</h2></div>
-        <span class="muted">仅用于管理后台，不是模型调用 Key</span>
+        <div><span class="section-number">01</span><h2>管理身份</h2></div>
+        <span id="authModeLabel" class="muted">正在识别访问来源…</span>
       </div>
       <div class="inline-form">
-        <label class="grow">管理员 Token<input id="adminToken" type="password" autocomplete="off" placeholder="粘贴启动时打印的 admin_... Token"></label>
-        <button id="loadButton" class="button primary">载入配置</button>
-        <button id="rotateTokenButton" class="button danger-outline" disabled>轮换 Token</button>
+        <div class="grow"><strong id="adminIdentity">正在检查认证状态</strong><div class="help">本地访问无需认证；远程会话由 Authentik 管理。</div></div>
+        <button id="loadButton" class="button primary">重新载入</button>
+        <button id="logoutButton" class="button danger-outline hidden">退出登录</button>
       </div>
       <div id="authMessage" class="form-message"></div>
     </section>
@@ -110,7 +110,7 @@
           <div><span class="section-number">08</span><h2>配置备份</h2></div>
           <div class="panel-actions"><button id="exportConfigButton" class="button secondary">导出配置</button><button id="importConfigButton" class="button primary">导入配置</button><input id="configFileInput" type="file" accept="application/json,.json" hidden></div>
         </div>
-        <p class="help">导出文件包含管理员 Token、本地 Key 和上游 API Key，请只保存到安全位置。导入默认保留本机当前管理员 Token 和本地 Key，避免导入后后台失去访问。</p>
+        <p class="help">导出文件包含本地 Key、上游 API Key 和旧版兼容字段，请只保存到安全位置。导入默认保留本机当前凭据。</p>
       </section>
 
       <section class="panel endpoint-panel">

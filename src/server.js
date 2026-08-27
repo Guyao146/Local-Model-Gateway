@@ -25,6 +25,7 @@ const {
 } = require('./protocol');
 const { recordRequest, getMetrics, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
+const { createAdminAuth } = require('./admin-auth');
 
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -46,6 +47,8 @@ function log(message, details) {
   const suffix = details === undefined ? '' : ` ${JSON.stringify(details)}`;
   console.log(`[${nowIso()}] ${message}${suffix}`);
 }
+
+const adminAuth = createAdminAuth({ log });
 
 function safeRecordRequest(entry) {
   try {
@@ -90,10 +93,62 @@ function sendText(res, statusCode, body, contentType = 'text/plain; charset=utf-
   res.end(body);
 }
 
+function sendRedirect(res, location, extraHeaders = {}) {
+  res.writeHead(302, { Location: location, 'Cache-Control': 'no-store', ...extraHeaders });
+  res.end();
+}
+
+function validateLocalReturnTo(value) {
+  const path = String(value || '/').trim();
+  return path.startsWith('/') && !path.startsWith('//') && path.length <= 1000 ? path : '/';
+}
+
+function parsedHostname(host) {
+  try { return new URL(`http://${String(host || '')}`).hostname.toLowerCase(); } catch { return ''; }
+}
+
+function isLoopbackHostname(hostname) {
+  const normalized = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (normalized === 'localhost' || normalized.endsWith('.localhost')) return true;
+  if (normalized === '::1') return true;
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(normalized)) return false;
+  return Number(normalized.split('.')[0]) === 127;
+}
+
+function configuredAdminOrigin() {
+  try { return new URL(adminAuth.redirectUri).origin; } catch { return ''; }
+}
+
+function adminRequestIsSameOrigin(req, access) {
+  const host = String(req.headers.host || '').toLowerCase();
+  const hostname = parsedHostname(host);
+  if (access.mode === 'local') {
+    if (!isLoopbackHostname(hostname)) return false;
+  } else {
+    const publicOrigin = configuredAdminOrigin();
+    if (!publicOrigin || host !== new URL(publicOrigin).host.toLowerCase()) return false;
+  }
+  if (String(req.headers['sec-fetch-site'] || '').toLowerCase() === 'cross-site') return false;
+  const origin = String(req.headers.origin || '').trim();
+  if (origin) {
+    try {
+      if (access.mode === 'local') {
+        const originUrl = new URL(origin);
+        if (!isLoopbackHostname(originUrl.hostname) || originUrl.host.toLowerCase() !== host) return false;
+      } else if (new URL(origin).origin !== configuredAdminOrigin()) return false;
+    } catch {
+      return false;
+    }
+  } else if (access.mode === 'oidc' && !['GET', 'HEAD'].includes(req.method)) {
+    return false;
+  }
+  return true;
+}
+
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-API-Key, X-Admin-Token',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-API-Key',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS'
   };
 }
@@ -135,10 +190,6 @@ function settingsFromBody(body, existing = config.settings) {
     next[key] = value;
   }
   return normalizeSettings(next);
-}
-
-function isAdmin(req) {
-  return isEqualSecret(req.headers['x-admin-token'], config.adminToken) || isEqualSecret(getBearerToken(req), config.adminToken);
 }
 
 function findLocalKey(token) {
@@ -230,8 +281,23 @@ function publicUpstreamHealth() {
 }
 
 function requireAdmin(req, res) {
-  if (isAdmin(req)) return true;
-  sendJson(res, 401, { error: { message: '需要有效的管理员 Token', type: 'authentication_error' } });
+  const access = adminAuth.authenticate(req);
+  if (access.ok) {
+    if (!adminRequestIsSameOrigin(req, access)) {
+      sendJson(res, 403, { error: { message: '管理请求来源不受信任', type: 'forbidden' } });
+      return false;
+    }
+    req.adminAccess = access;
+    return true;
+  }
+  const message = access.configured ? '远程管理访问需要通过 Authentik 登录' : adminAuth.configurationError();
+  sendJson(res, access.configured ? 401 : 503, {
+    error: {
+      message,
+      type: 'authentication_error',
+      loginUrl: access.configured ? '/auth/oidc/login?returnTo=/' : null
+    }
+  });
   return false;
 }
 
@@ -1469,6 +1535,7 @@ function serveStatic(res, pathname) {
 
 async function handleAdmin(req, res, pathname) {
   if (!requireAdmin(req, res)) return;
+  res.setHeader('Cache-Control', 'no-store');
   if (req.method === 'GET' && pathname === '/api/admin/config') {
     sendJson(res, 200, publicConfig(config));
     return;
@@ -1671,12 +1738,6 @@ async function handleAdmin(req, res, pathname) {
     sendJson(res, 200, resetUpstreamHealth(id));
     return;
   }
-  if (req.method === 'POST' && pathname === '/api/admin/admin-token/rotate') {
-    config.adminToken = makeSecret('admin');
-    saveConfig(config);
-    sendJson(res, 200, { adminToken: config.adminToken });
-    return;
-  }
   if (req.method === 'GET' && pathname === '/api/admin/metrics') {
     sendJson(res, 200, getMetrics());
     return;
@@ -1698,6 +1759,45 @@ async function requestHandler(req, res) {
   const pathname = requestUrl.pathname;
   if (pathname === '/health') {
     sendJson(res, 200, { status: 'ok', service: 'local-model-gateway', time: nowIso() });
+    return;
+  }
+  if (pathname === '/auth/status' && req.method === 'GET') {
+    const access = adminAuth.authenticate(req);
+    sendJson(res, access.ok ? 200 : (access.configured ? 401 : 503), {
+      authenticated: access.ok,
+      mode: access.ok ? access.mode : 'oidc',
+      configured: access.configured !== false,
+      user: access.user || null,
+      error: access.ok ? null : { message: access.configured ? '需要通过 Authentik 登录' : adminAuth.configurationError() }
+    }, { 'Cache-Control': 'no-store' });
+    return;
+  }
+  if (pathname === '/auth/oidc/login' && req.method === 'GET') {
+    const access = adminAuth.authenticate(req);
+    if (access.ok) {
+      sendRedirect(res, validateLocalReturnTo(requestUrl.searchParams.get('returnTo')));
+      return;
+    }
+    try {
+      const login = await adminAuth.beginLogin(requestUrl.searchParams.get('returnTo'));
+      sendRedirect(res, login.location, { 'Set-Cookie': login.cookie });
+    } catch (error) {
+      sendText(res, error.statusCode || 503, error.message);
+    }
+    return;
+  }
+  if (pathname === '/auth/oidc/callback' && req.method === 'GET') {
+    try {
+      const result = await adminAuth.finishLogin(Object.fromEntries(requestUrl.searchParams), req.headers.cookie);
+      sendRedirect(res, result.returnTo, { 'Set-Cookie': result.cookies });
+    } catch (error) {
+      sendText(res, error.statusCode || 502, error.message);
+    }
+    return;
+  }
+  if (pathname === '/auth/logout' && (req.method === 'GET' || req.method === 'POST')) {
+    const result = await adminAuth.logout(req);
+    sendRedirect(res, result.location, { 'Set-Cookie': result.cookie });
     return;
   }
   if (pathname.startsWith('/api/admin/')) {
@@ -1747,6 +1847,21 @@ async function requestHandler(req, res) {
     return;
   }
   if (req.method === 'GET') {
+    if (pathname === '/' || pathname === '/index.html') {
+      const access = adminAuth.authenticate(req);
+      if (!access.ok) {
+        if (!access.configured) {
+          sendText(res, 503, adminAuth.configurationError());
+          return;
+        }
+        sendRedirect(res, `/auth/oidc/login?returnTo=${encodeURIComponent(`${pathname}${requestUrl.search}`)}`);
+        return;
+      }
+      if (!adminRequestIsSameOrigin(req, access)) {
+        sendText(res, 403, '管理页面请求来源不受信任');
+        return;
+      }
+    }
     serveStatic(res, pathname);
     return;
   }
@@ -1763,7 +1878,8 @@ const server = http.createServer((req, res) => {
 
 server.listen(config.settings.port, config.settings.host, () => {
   log(`Local Model Gateway 已启动：http://${config.settings.host}:${config.settings.port}`);
-  log(`管理 Token：${config.adminToken}`);
+  log('本地管理访问：无需认证');
+  log(adminAuth.isConfigured() ? '远程管理访问：Authentik OIDC 已启用' : adminAuth.configurationError());
   for (const item of config.localApiKeys) log(`本地 API Key（${item.name}）：${item.key}`);
   if (config.upstreams.length === 0) log('当前还没有配置上游，请打开首页配置。');
 });

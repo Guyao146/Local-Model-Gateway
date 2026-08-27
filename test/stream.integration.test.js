@@ -105,9 +105,9 @@ async function main() {
   let stderr = '';
   gateway.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
   try {
-    const output = await waitForOutput(gateway, '管理 Token：');
+    const output = await waitForOutput(gateway, '本地管理访问：无需认证');
     const config = JSON.parse(fs.readFileSync(path.join(dataDirectory, 'config.json'), 'utf8'));
-    const adminHeaders = { 'X-Admin-Token': config.adminToken };
+    const adminHeaders = {};
     const localHeaders = { Authorization: `Bearer ${config.localApiKeys[0].key}` };
     const add = (name, port, protocol, model) => requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
       method: 'POST', headers: adminHeaders, body: JSON.stringify({ name, baseUrl: `http://127.0.0.1:${port}/v1`, protocol, authType: 'none', apiKey: '', models: model })

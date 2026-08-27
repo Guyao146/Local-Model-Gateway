@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node test/protocol.test.js && node test/routing.test.js && node test/gateway.integration.test.js && node test/stream.integration.test.js && node test/model-selection.integration.test.js"
+    "test": "node test/protocol.test.js && node test/routing.test.js && node test/admin-auth.test.js && node test/auth.integration.test.js && node test/gateway.integration.test.js && node test/stream.integration.test.js && node test/model-selection.integration.test.js"
   },
   "engines": {
     "node": ">=18"
