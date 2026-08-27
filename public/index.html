@@ -59,7 +59,7 @@
           <div><span class="section-number">04</span><h2>本地模型选择</h2></div>
           <div class="panel-actions"><button id="syncAllModelsButton" class="button secondary">拉取全部模型</button><button id="saveModelSelectionsButton" class="button primary">保存勾选</button></div>
         </div>
-        <p class="help">模型按上游和 ID 前缀两级分组，默认全部收起。每个上游和前缀都可以全部勾选或全部取消；勾选后会暴露到本地 API。可以设置本地别名和默认思考强度。</p>
+        <p class="help">相同模型 ID 会合并成一项，并按 ID 前缀分组。每个模型可选择“自动选择”全部同名来源站，也可在下拉框中固定某一个站；自动模式会轮询健康站点，并在连接失败、429、5xx 或熔断时切换。可以设置本地别名和默认思考强度。</p>
         <div class="model-toolbar"><input id="modelCatalogSearch" type="search" placeholder="搜索上游、模型或前缀"><label class="check-label"><input id="showThinkingModelsOnly" type="checkbox"> 只看支持思考的模型</label><button id="expandAllModelsButton" class="text-button">全部展开</button><button id="collapseAllModelsButton" class="text-button">全部收起</button></div>
         <div id="modelCatalogList" class="model-catalog-list"></div>
         <div id="modelSelectionMessage" class="form-message"></div>

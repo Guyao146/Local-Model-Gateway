@@ -4,12 +4,11 @@ const state = {
   health: null,
   balances: null,
   catalog: null,
-  expandedProviders: new Set(),
   expandedPrefixes: new Set(),
   modelSelectionDraft: null
 };
 const $ = (selector) => document.querySelector(selector);
-const { groupModelsByPrefix, modelGroupKey, modelPrefix, modelSelectionKey, setModelsSelected } = window.ModelGroups;
+const { groupModelsByPrefix, mergeModelsById, modelGroupKey, modelPrefix, setUnifiedModelsSelected, unifiedModelSelectionKey } = window.ModelGroups;
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -108,17 +107,49 @@ function thinkingLabel(level) {
 
 function catalogSelectionMap() {
   if (!(state.modelSelectionDraft instanceof Map)) {
-    state.modelSelectionDraft = new Map((state.catalog?.selections || []).map((item) => [modelSelectionKey(item.upstreamId, item.upstreamModel), { ...item }]));
+    state.modelSelectionDraft = new Map();
+    for (const item of state.catalog?.selections || []) {
+      const key = unifiedModelSelectionKey(item.upstreamModel);
+      if (!key) continue;
+      const previous = state.modelSelectionDraft.get(key);
+      const itemIds = Array.isArray(item.upstreamIds) && item.upstreamIds.length ? item.upstreamIds : [item.upstreamId];
+      if (previous) {
+        const upstreamIds = [...new Set([...(previous.upstreamIds || [previous.upstreamId]), ...itemIds].filter(Boolean))];
+        state.modelSelectionDraft.set(key, {
+          ...previous,
+          upstreamId: upstreamIds[0],
+          upstreamIds,
+          upstreamMode: upstreamIds.length > 1 ? 'auto' : previous.upstreamMode
+        });
+        continue;
+      }
+      state.modelSelectionDraft.set(key, {
+        ...item,
+        upstreamMode: item.upstreamMode === 'auto' ? 'auto' : 'fixed',
+        upstreamIds: itemIds
+      });
+    }
   }
   return state.modelSelectionDraft;
 }
 
 function reconcileModelSelectionDraft(catalog, reset = false) {
-  const selections = reset || !(state.modelSelectionDraft instanceof Map)
-    ? new Map((catalog?.selections || []).map((item) => [modelSelectionKey(item.upstreamId, item.upstreamModel), { ...item }]))
-    : new Map(state.modelSelectionDraft);
-  const validKeys = new Set((catalog?.upstreams || []).flatMap((provider) => provider.models.map((model) => modelSelectionKey(provider.id, model.id))));
-  state.modelSelectionDraft = new Map([...selections].filter(([key]) => validKeys.has(key)));
+  if (reset) state.modelSelectionDraft = null;
+  const selections = new Map(catalogSelectionMap());
+  const models = mergeModelsById(catalog?.upstreams || []);
+  const modelsById = new Map(models.map((model) => [model.id, model]));
+  const reconciled = new Map();
+  for (const [key, selection] of selections) {
+    const model = modelsById.get(key);
+    if (!model) continue;
+    const providerIds = model.providers.map((provider) => provider.id);
+    if (selection.upstreamMode === 'auto' && providerIds.length > 1) {
+      reconciled.set(key, { ...selection, upstreamId: providerIds[0], upstreamIds: providerIds, upstreamMode: 'auto' });
+    } else if (providerIds.includes(selection.upstreamId)) {
+      reconciled.set(key, { ...selection, upstreamIds: [selection.upstreamId], upstreamMode: 'fixed' });
+    }
+  }
+  state.modelSelectionDraft = reconciled;
 }
 
 function syncRenderedModelDraft() {
@@ -126,44 +157,59 @@ function syncRenderedModelDraft() {
   for (const row of document.querySelectorAll('.model-row')) {
     const checkbox = row.querySelector('[data-action="toggle-model"]');
     if (!checkbox) continue;
-    const key = modelSelectionKey(checkbox.dataset.upstreamId, checkbox.dataset.upstreamModel);
+    const modelId = checkbox.dataset.modelId;
+    const key = unifiedModelSelectionKey(modelId);
     if (!checkbox.checked) {
       draft.delete(key);
       continue;
     }
     const previous = draft.get(key) || {};
+    const upstreamSelect = row.querySelector('[data-action="model-upstream"]');
+    const providerIds = [...upstreamSelect.options].map((option) => option.value).filter((value) => value !== '__auto__');
+    const automatic = upstreamSelect.value === '__auto__' && providerIds.length > 1;
+    const upstreamId = automatic ? providerIds[0] : upstreamSelect.value;
     draft.set(key, {
       ...previous,
-      upstreamId: checkbox.dataset.upstreamId,
-      upstreamModel: checkbox.dataset.upstreamModel,
-      localModel: row.querySelector('[data-action="model-alias"]')?.value.trim() || checkbox.dataset.upstreamModel,
+      upstreamId,
+      upstreamIds: automatic ? providerIds : [upstreamId],
+      upstreamMode: automatic ? 'auto' : 'fixed',
+      upstreamModel: modelId,
+      localModel: row.querySelector('[data-action="model-alias"]')?.value.trim() || modelId,
       thinkingLevel: row.querySelector('[data-action="thinking-level"]')?.value || 'auto',
       enabled: true
     });
   }
 }
 
-function filteredProviderModels(provider) {
+function allUnifiedModels() {
+  return mergeModelsById(state.catalog?.upstreams || []);
+}
+
+function filteredUnifiedModels(models) {
   const search = $('#modelCatalogSearch')?.value.trim().toLowerCase() || '';
   const thinkingOnly = Boolean($('#showThinkingModelsOnly')?.checked);
-  return provider.models.filter((model) => {
-    const matchesSearch = !search || `${provider.name} ${model.id} ${model.name}`.toLowerCase().includes(search);
+  return models.filter((model) => {
+    const providerNames = model.providers.map((provider) => provider.name).join(' ');
+    const matchesSearch = !search || `${providerNames} ${model.id} ${model.name} ${modelPrefix(model.id)}`.toLowerCase().includes(search);
     return matchesSearch && (!thinkingOnly || model.supportsThinking === true);
   });
 }
 
-function renderModelRow(provider, model, selections) {
-  const key = modelSelectionKey(provider.id, model.id);
+function renderModelRow(model, selections) {
+  const key = unifiedModelSelectionKey(model.id);
   const selection = selections.get(key);
-  return `<div class="model-row" data-model-key="${escapeHtml(key)}"><input type="checkbox" data-action="toggle-model" data-upstream-id="${escapeHtml(provider.id)}" data-upstream-model="${escapeHtml(model.id)}" ${selection ? 'checked' : ''}><div><div class="model-name" title="${escapeHtml(model.id)}">${escapeHtml(model.id)}${model.supportsThinking === true ? '<span class="thinking-badge">支持思考</span>' : model.supportsThinking === null ? '<span class="thinking-badge thinking-unknown">能力未知</span>' : '<span class="thinking-badge thinking-disabled">不支持思考</span>'}</div><div class="model-info">${escapeHtml(model.name !== model.id ? model.name : (model.ownedBy || ''))}</div></div><div class="model-controls"><input type="text" data-action="model-alias" data-upstream-id="${escapeHtml(provider.id)}" data-upstream-model="${escapeHtml(model.id)}" value="${escapeHtml(selection?.localModel || model.id)}" placeholder="本地模型别名"><select data-action="thinking-level" data-upstream-id="${escapeHtml(provider.id)}" data-upstream-model="${escapeHtml(model.id)}"><option value="auto" ${!selection || selection.thinkingLevel === 'auto' ? 'selected' : ''}>思考：自动</option><option value="off" ${selection?.thinkingLevel === 'off' ? 'selected' : ''}>思考：关闭</option><option value="low" ${selection?.thinkingLevel === 'low' ? 'selected' : ''}>思考：低</option><option value="medium" ${selection?.thinkingLevel === 'medium' ? 'selected' : ''}>思考：中</option><option value="high" ${selection?.thinkingLevel === 'high' ? 'selected' : ''}>思考：高</option></select></div></div>`;
+  const selectedProvider = selection?.upstreamMode === 'auto' && model.providers.length > 1 ? '__auto__' : (selection?.upstreamId || (model.providers.length > 1 ? '__auto__' : model.providers[0]?.id));
+  const providerOptions = `${model.providers.length > 1 ? `<option value="__auto__" ${selectedProvider === '__auto__' ? 'selected' : ''}>自动选择（${model.providers.length} 个站）</option>` : ''}${model.providers.map((provider) => `<option value="${escapeHtml(provider.id)}" ${selectedProvider === provider.id ? 'selected' : ''}>${escapeHtml(provider.name)} · ${escapeHtml(provider.protocol)}${provider.enabled ? '' : '（已停用）'}</option>`).join('')}`;
+  const providerNames = model.providers.map((provider) => provider.name).join('、');
+  return `<div class="model-row" data-model-key="${escapeHtml(key)}"><input type="checkbox" data-action="toggle-model" data-model-id="${escapeHtml(model.id)}" ${selection ? 'checked' : ''}><div><div class="model-name" title="${escapeHtml(model.id)}">${escapeHtml(model.id)}${model.providers.length > 1 ? `<span class="source-count-badge">${model.providers.length} 个站</span>` : ''}${model.supportsThinking === true ? '<span class="thinking-badge">支持思考</span>' : model.supportsThinking === null ? '<span class="thinking-badge thinking-unknown">能力未知</span>' : '<span class="thinking-badge thinking-disabled">不支持思考</span>'}</div><div class="model-info" title="${escapeHtml(providerNames)}">来源：${escapeHtml(providerNames)}</div></div><div class="model-controls"><select data-action="model-upstream" aria-label="${escapeHtml(model.id)} 的上游站点">${providerOptions}</select><input type="text" data-action="model-alias" value="${escapeHtml(selection?.localModel || model.id)}" placeholder="本地模型别名"><select data-action="thinking-level"><option value="auto" ${!selection || selection.thinkingLevel === 'auto' ? 'selected' : ''}>思考：自动</option><option value="off" ${selection?.thinkingLevel === 'off' ? 'selected' : ''}>思考：关闭</option><option value="low" ${selection?.thinkingLevel === 'low' ? 'selected' : ''}>思考：低</option><option value="medium" ${selection?.thinkingLevel === 'medium' ? 'selected' : ''}>思考：中</option><option value="high" ${selection?.thinkingLevel === 'high' ? 'selected' : ''}>思考：高</option></select></div></div>`;
 }
 
-function renderPrefixGroup(provider, prefix, visibleModels, selections) {
-  const prefixKey = modelGroupKey(provider.id, prefix);
-  const allModels = provider.models.filter((model) => modelPrefix(model.id) === prefix);
-  const selectedCount = allModels.filter((model) => selections.has(modelSelectionKey(provider.id, model.id))).length;
+function renderPrefixGroup(prefix, visibleModels, allModels, selections) {
+  const prefixKey = modelGroupKey('unified', prefix);
+  const completeModels = allModels.filter((model) => modelPrefix(model.id) === prefix);
+  const selectedCount = completeModels.filter((model) => selections.has(unifiedModelSelectionKey(model.id))).length;
   const collapsed = state.expandedPrefixes.has(prefixKey) ? '' : ' collapsed';
-  return `<section class="model-prefix${collapsed}" data-prefix-key="${escapeHtml(prefixKey)}"><div class="model-prefix-header"><button type="button" class="model-prefix-toggle" data-action="toggle-prefix" data-prefix-key="${escapeHtml(prefixKey)}" aria-expanded="${state.expandedPrefixes.has(prefixKey)}"><span class="prefix-title"><span class="prefix-arrow" aria-hidden="true"></span><code>${escapeHtml(prefix)}</code></span><span class="prefix-meta">${selectedCount}/${allModels.length} 已选</span></button><div class="model-group-actions"><button type="button" class="text-button" data-action="select-prefix" data-provider-id="${escapeHtml(provider.id)}" data-prefix="${escapeHtml(prefix)}">全部勾选</button><button type="button" class="text-button" data-action="clear-prefix" data-provider-id="${escapeHtml(provider.id)}" data-prefix="${escapeHtml(prefix)}">全部取消</button></div></div><div class="model-prefix-body">${visibleModels.map((model) => renderModelRow(provider, model, selections)).join('')}</div></section>`;
+  return `<section class="model-prefix${collapsed}" data-prefix-key="${escapeHtml(prefixKey)}"><div class="model-prefix-header"><button type="button" class="model-prefix-toggle" data-action="toggle-prefix" data-prefix-key="${escapeHtml(prefixKey)}" aria-expanded="${state.expandedPrefixes.has(prefixKey)}"><span class="prefix-title"><span class="prefix-arrow" aria-hidden="true"></span><code>${escapeHtml(prefix)}</code></span><span class="prefix-meta">${selectedCount}/${completeModels.length} 已选</span></button><div class="model-group-actions"><button type="button" class="text-button" data-action="select-prefix" data-prefix="${escapeHtml(prefix)}">全部勾选</button><button type="button" class="text-button" data-action="clear-prefix" data-prefix="${escapeHtml(prefix)}">全部取消</button></div></div><div class="model-prefix-body">${visibleModels.map((model) => renderModelRow(model, selections)).join('')}</div></section>`;
 }
 
 function renderModelCatalog() {
@@ -175,16 +221,10 @@ function renderModelCatalog() {
     return;
   }
   const selections = catalogSelectionMap();
-  const providers = catalog.upstreams.map((provider) => ({ provider, models: filteredProviderModels(provider) })).filter(({ provider, models }) => {
-    const search = $('#modelCatalogSearch')?.value.trim() || '';
-    return models.length || !search;
-  });
-  list.innerHTML = providers.length ? providers.map(({ provider, models }) => {
-    const collapsed = state.expandedProviders.has(provider.id) ? '' : ' collapsed';
-    const selectedCount = provider.models.filter((model) => selections.has(modelSelectionKey(provider.id, model.id))).length;
-    const prefixGroups = groupModelsByPrefix(models);
-    return `<section class="model-provider${collapsed}" data-provider-id="${escapeHtml(provider.id)}"><div class="model-provider-header"><button type="button" class="model-provider-toggle" data-action="toggle-provider" data-provider-id="${escapeHtml(provider.id)}" aria-expanded="${state.expandedProviders.has(provider.id)}"><span class="provider-title"><span class="provider-arrow" aria-hidden="true"></span>${escapeHtml(provider.name)}<span class="tag">${escapeHtml(provider.protocol)}</span></span><span class="provider-meta">${selectedCount}/${provider.models.length} 已选 · ${provider.modelsSyncedAt ? `同步于 ${escapeHtml(formatTime(provider.modelsSyncedAt))}` : '手工模型'}</span></button><div class="model-group-actions"><button type="button" class="text-button" data-action="select-provider" data-provider-id="${escapeHtml(provider.id)}">全部勾选</button><button type="button" class="text-button" data-action="clear-provider" data-provider-id="${escapeHtml(provider.id)}">全部取消</button></div></div><div class="model-provider-body">${prefixGroups.length ? prefixGroups.map((group) => renderPrefixGroup(provider, group.prefix, group.models, selections)).join('') : '<div class="empty">没有匹配的模型</div>'}</div></section>`;
-  }).join('') : '<div class="empty">没有匹配的模型。</div>';
+  const allModels = allUnifiedModels();
+  const visibleModels = filteredUnifiedModels(allModels);
+  const prefixGroups = groupModelsByPrefix(visibleModels);
+  list.innerHTML = prefixGroups.length ? prefixGroups.map((group) => renderPrefixGroup(group.prefix, group.models, allModels, selections)).join('') : '<div class="empty">没有匹配的模型。</div>';
 }
 
 function render() {
@@ -391,13 +431,6 @@ function setBalanceResult(result) {
   state.balances = { items: [...items, result] };
 }
 
-function toggleProvider(providerId) {
-  syncRenderedModelDraft();
-  if (state.expandedProviders.has(providerId)) state.expandedProviders.delete(providerId);
-  else state.expandedProviders.add(providerId);
-  renderModelCatalog();
-}
-
 function togglePrefix(prefixKey) {
   syncRenderedModelDraft();
   if (state.expandedPrefixes.has(prefixKey)) state.expandedPrefixes.delete(prefixKey);
@@ -407,22 +440,18 @@ function togglePrefix(prefixKey) {
 
 function expandModelGroups(expanded) {
   syncRenderedModelDraft();
-  const providers = state.catalog?.upstreams || [];
-  state.expandedProviders = expanded ? new Set(providers.map((provider) => provider.id)) : new Set();
   state.expandedPrefixes = expanded
-    ? new Set(providers.flatMap((provider) => groupModelsByPrefix(provider.models).map((group) => modelGroupKey(provider.id, group.prefix))))
+    ? new Set(groupModelsByPrefix(allUnifiedModels()).map((group) => modelGroupKey('unified', group.prefix)))
     : new Set();
   renderModelCatalog();
 }
 
-function batchSelectModels(upstreamId, prefix, selected) {
+function batchSelectModels(prefix, selected) {
   syncRenderedModelDraft();
-  const provider = state.catalog?.upstreams.find((item) => item.id === upstreamId);
-  if (!provider) return;
-  const models = prefix === null ? provider.models : provider.models.filter((model) => modelPrefix(model.id) === prefix);
-  state.modelSelectionDraft = setModelsSelected(catalogSelectionMap(), upstreamId, models, selected);
+  const models = allUnifiedModels().filter((model) => modelPrefix(model.id) === prefix);
+  state.modelSelectionDraft = setUnifiedModelsSelected(catalogSelectionMap(), models, selected);
   renderModelCatalog();
-  toast(`${provider.name}${prefix === null ? '' : ` / ${prefix}`} 已${selected ? '全部勾选' : '全部取消'}`);
+  toast(`${prefix} 已${selected ? '全部勾选' : '全部取消'}`);
 }
 
 function fillUpstreamForm(item = null) {
@@ -743,12 +772,9 @@ $('#collapseAllModelsButton').addEventListener('click', () => expandModelGroups(
 $('#modelCatalogList').addEventListener('click', (event) => {
   const button = event.target.closest('[data-action]');
   if (!button) return;
-  if (button.dataset.action === 'toggle-provider') toggleProvider(button.dataset.providerId);
   if (button.dataset.action === 'toggle-prefix') togglePrefix(button.dataset.prefixKey);
-  if (button.dataset.action === 'select-provider') batchSelectModels(button.dataset.providerId, null, true);
-  if (button.dataset.action === 'clear-provider') batchSelectModels(button.dataset.providerId, null, false);
-  if (button.dataset.action === 'select-prefix') batchSelectModels(button.dataset.providerId, button.dataset.prefix, true);
-  if (button.dataset.action === 'clear-prefix') batchSelectModels(button.dataset.providerId, button.dataset.prefix, false);
+  if (button.dataset.action === 'select-prefix') batchSelectModels(button.dataset.prefix, true);
+  if (button.dataset.action === 'clear-prefix') batchSelectModels(button.dataset.prefix, false);
 });
 $('#modelCatalogList').addEventListener('change', syncRenderedModelDraft);
 $('#modelCatalogList').addEventListener('input', (event) => {

@@ -540,13 +540,24 @@ function modelSelectionKey(upstreamId, upstreamModel) {
 }
 
 function normalizeModelSelection(item, existing = {}) {
-  const upstreamId = String(item?.upstreamId || existing.upstreamId || '').trim();
+  const requestedMode = item?.upstreamMode ?? existing.upstreamMode;
+  const upstreamMode = requestedMode === 'auto' ? 'auto' : 'fixed';
+  const requestedIds = item?.upstreamIds !== undefined ? item.upstreamIds : existing.upstreamIds;
+  const normalizedIds = (Array.isArray(requestedIds) ? requestedIds : [])
+    .map((id) => String(id || '').trim())
+    .filter((id, index, list) => id && list.indexOf(id) === index);
+  const upstreamId = String(item?.upstreamId || normalizedIds[0] || existing.upstreamId || '').trim();
   const upstreamModel = String(item?.upstreamModel || existing.upstreamModel || '').trim();
   const localModel = String(item?.localModel || existing.localModel || upstreamModel).trim();
   if (!upstreamId || !upstreamModel || !localModel) throw new Error('模型选择必须包含上游、上游模型和本地模型名');
+  const upstreamIds = upstreamMode === 'auto'
+    ? [upstreamId, ...normalizedIds.filter((id) => id !== upstreamId)]
+    : [upstreamId];
   return {
     id: existing.id || item.id || makeId('selection'),
     upstreamId,
+    upstreamIds,
+    upstreamMode,
     upstreamModel,
     localModel,
     thinkingLevel: normalizeThinkingLevel(item?.thinkingLevel ?? existing.thinkingLevel ?? 'auto'),
@@ -588,7 +599,7 @@ function publicModelCatalog() {
       modelsSyncedAt: upstream.modelsSyncedAt || null,
       models: catalogForUpstream(upstream).map((model) => ({
         ...model,
-        selection: selections.find((item) => item.enabled !== false && item.upstreamId === upstream.id && item.upstreamModel === model.id) || null
+        selection: selections.find((item) => item.enabled !== false && (item.upstreamIds || [item.upstreamId]).includes(upstream.id) && item.upstreamModel === model.id) || null
       }))
     })),
     selections,
@@ -598,35 +609,46 @@ function publicModelCatalog() {
 
 function saveModelSelections(rawSelections) {
   if (!Array.isArray(rawSelections)) throw new Error('模型选择必须是数组');
-  const previousByKey = new Map((config.modelSelections || []).map((item) => [modelSelectionKey(item.upstreamId, item.upstreamModel), item]));
+  const previousByModel = new Map();
+  for (const item of config.modelSelections || []) {
+    if (!previousByModel.has(item.upstreamModel)) previousByModel.set(item.upstreamModel, item);
+  }
   const selections = [];
   const usedLocalModels = new Set();
+  const usedUpstreamModels = new Set();
   const managedRoutesBySelection = new Map(
     config.routes.filter((item) => item.managedBy === 'model-selector').map((item) => [item.selectionId || modelSelectionKey(item.upstreamId, item.upstreamModel), item])
   );
 
   for (const raw of rawSelections) {
     if (raw?.enabled === false) continue;
-    const upstreamId = String(raw?.upstreamId || '').trim();
     const upstreamModel = String(raw?.upstreamModel || '').trim();
-    const upstream = config.upstreams.find((item) => item.id === upstreamId);
-    if (!upstream) throw new Error(`模型选择引用了不存在的上游：${upstreamId}`);
-    if (!modelEntryFor(upstream, upstreamModel)) throw new Error(`上游 ${upstream.name} 中不存在模型：${upstreamModel}`);
-    const previous = previousByKey.get(modelSelectionKey(upstreamId, upstreamModel)) || {};
-    const selection = normalizeModelSelection({ ...raw, upstreamId, upstreamModel, enabled: true }, previous);
-    if (usedLocalModels.has(selection.localModel)) throw new Error(`本地模型名重复：${selection.localModel}，请为不同站点设置不同别名`);
+    if (!upstreamModel) throw new Error('模型选择缺少模型 ID');
+    if (usedUpstreamModels.has(upstreamModel)) throw new Error(`模型重复选择：${upstreamModel}`);
+    const previous = previousByModel.get(upstreamModel) || {};
+    const selection = normalizeModelSelection({ ...raw, upstreamModel, enabled: true }, previous);
+    const selectedUpstreams = selection.upstreamIds.map((upstreamId) => {
+      const upstream = config.upstreams.find((item) => item.id === upstreamId);
+      if (!upstream) throw new Error(`模型选择引用了不存在的上游：${upstreamId}`);
+      if (!modelEntryFor(upstream, upstreamModel)) throw new Error(`上游 ${upstream.name} 中不存在模型：${upstreamModel}`);
+      return upstream;
+    });
+    if (selection.upstreamMode === 'auto' && selectedUpstreams.length < 2) selection.upstreamMode = 'fixed';
+    if (usedLocalModels.has(selection.localModel)) throw new Error(`本地模型名重复：${selection.localModel}`);
     const conflictingManualRoute = config.routes.find((item) => item.managedBy !== 'model-selector' && item.localModel === selection.localModel);
     if (conflictingManualRoute) throw new Error(`本地模型名与手工路由冲突：${selection.localModel}`);
-    const oldRoute = selection.managedRouteId ? config.routes.find((item) => item.id === selection.managedRouteId) : managedRoutesBySelection.get(selection.id) || managedRoutesBySelection.get(modelSelectionKey(upstreamId, upstreamModel));
+    const oldRoute = selection.managedRouteId ? config.routes.find((item) => item.id === selection.managedRouteId) : managedRoutesBySelection.get(selection.id) || managedRoutesBySelection.get(modelSelectionKey(selection.upstreamId, upstreamModel));
+    const fallbackUpstreamIds = selection.upstreamMode === 'auto' ? selection.upstreamIds.slice(1) : [];
+    const upstreamWeights = Object.fromEntries(selection.upstreamIds.map((id) => [id, 1]));
     const route = buildRoute({
       id: oldRoute?.id,
       localModel: selection.localModel,
-      upstreamId,
+      upstreamId: selection.upstreamId,
       upstreamModel,
       thinkingLevel: selection.thinkingLevel,
-      strategy: oldRoute?.strategy || 'failover',
-      fallbackUpstreamIds: oldRoute?.fallbackUpstreamIds || [],
-      upstreamWeights: oldRoute?.upstreamWeights || {},
+      strategy: selection.upstreamMode === 'auto' ? 'round_robin' : 'failover',
+      fallbackUpstreamIds,
+      upstreamWeights,
       enabled: true,
       managedBy: 'model-selector',
       selectionId: selection.id
@@ -635,8 +657,9 @@ function saveModelSelections(rawSelections) {
     selection.updatedAt = nowIso();
     selections.push(selection);
     usedLocalModels.add(selection.localModel);
+    usedUpstreamModels.add(selection.upstreamModel);
     managedRoutesBySelection.delete(selection.id);
-    managedRoutesBySelection.delete(modelSelectionKey(upstreamId, upstreamModel));
+    managedRoutesBySelection.delete(modelSelectionKey(selection.upstreamId, upstreamModel));
     const routeIndex = config.routes.findIndex((item) => item.id === route.id);
     if (routeIndex >= 0) config.routes[routeIndex] = route;
     else config.routes.push(route);
@@ -1587,19 +1610,48 @@ function importConfig(rawConfig, preserveCredentials = true) {
   }
 
   const importedSelections = [];
-  const selectionKeys = new Set();
+  const selectionsByModel = new Map();
+  const redundantManagedRouteIds = new Set();
   for (const item of Array.isArray(source.modelSelections) ? source.modelSelections : []) {
     if (!item || typeof item !== 'object' || item.enabled === false) continue;
     const selection = normalizeModelSelection(item);
-    const key = modelSelectionKey(selection.upstreamId, selection.upstreamModel);
-    if (selectionKeys.has(key)) throw new Error(`模型选择重复：${key}`);
-    const upstream = importedUpstreams.find((candidate) => candidate.id === selection.upstreamId);
-    if (!upstream || !modelEntryFor(upstream, selection.upstreamModel)) throw new Error(`备份中的模型选择无效：${key}`);
+    const key = selection.upstreamModel;
+    for (const upstreamId of selection.upstreamIds) {
+      const upstream = importedUpstreams.find((candidate) => candidate.id === upstreamId);
+      if (!upstream || !modelEntryFor(upstream, selection.upstreamModel)) throw new Error(`备份中的模型选择无效：${key} / ${upstreamId}`);
+    }
     if (selection.managedRouteId && !importedRoutes.some((route) => route.id === selection.managedRouteId && route.managedBy === 'model-selector')) {
       throw new Error(`备份中的模型选择缺少管理路由：${key}`);
     }
-    importedSelections.push(selection);
-    selectionKeys.add(key);
+    const existing = selectionsByModel.get(key);
+    if (!existing) {
+      importedSelections.push(selection);
+      selectionsByModel.set(key, selection);
+      continue;
+    }
+    const upstreamIds = [...new Set([...existing.upstreamIds, ...selection.upstreamIds])];
+    existing.upstreamId = upstreamIds[0];
+    existing.upstreamIds = upstreamIds;
+    existing.upstreamMode = upstreamIds.length > 1 ? 'auto' : existing.upstreamMode;
+    existing.updatedAt = nowIso();
+    if (selection.managedRouteId && selection.managedRouteId !== existing.managedRouteId) redundantManagedRouteIds.add(selection.managedRouteId);
+  }
+
+  for (let index = importedRoutes.length - 1; index >= 0; index -= 1) {
+    if (redundantManagedRouteIds.has(importedRoutes[index].id)) importedRoutes.splice(index, 1);
+  }
+  for (const selection of importedSelections) {
+    const route = importedRoutes.find((item) => item.id === selection.managedRouteId && item.managedBy === 'model-selector');
+    if (!route) continue;
+    route.localModel = selection.localModel;
+    route.upstreamId = selection.upstreamId;
+    route.upstreamModel = selection.upstreamModel;
+    route.fallbackUpstreamIds = selection.upstreamMode === 'auto' ? selection.upstreamIds.slice(1) : [];
+    route.strategy = selection.upstreamMode === 'auto' ? 'round_robin' : 'failover';
+    route.upstreamWeights = Object.fromEntries(selection.upstreamIds.map((id) => [id, 1]));
+    route.thinkingLevel = selection.thinkingLevel;
+    route.selectionId = selection.id;
+    route.updatedAt = nowIso();
   }
 
   let importedKeys;

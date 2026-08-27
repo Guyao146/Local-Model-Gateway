@@ -17,6 +17,40 @@
     return JSON.stringify([String(upstreamId || ''), String(prefix || '')]);
   }
 
+  function unifiedModelSelectionKey(modelId) {
+    return String(modelId || '').trim();
+  }
+
+  function mergeModelsById(upstreams) {
+    const merged = new Map();
+    for (const upstream of Array.isArray(upstreams) ? upstreams : []) {
+      for (const model of Array.isArray(upstream?.models) ? upstream.models : []) {
+        const id = String(model?.id || '').trim();
+        if (!id) continue;
+        if (!merged.has(id)) {
+          merged.set(id, {
+            id,
+            name: String(model.name || id),
+            ownedBy: String(model.ownedBy || ''),
+            supportsThinking: model.supportsThinking,
+            providers: []
+          });
+        }
+        const item = merged.get(id);
+        if (model.supportsThinking === true) item.supportsThinking = true;
+        else if (item.supportsThinking !== true && model.supportsThinking === null) item.supportsThinking = null;
+        item.providers.push({
+          id: String(upstream.id),
+          name: String(upstream.name || upstream.id),
+          protocol: String(upstream.protocol || ''),
+          enabled: upstream.enabled !== false,
+          model
+        });
+      }
+    }
+    return [...merged.values()].sort((left, right) => left.id.localeCompare(right));
+  }
+
   function groupModelsByPrefix(models) {
     const groups = new Map();
     for (const model of Array.isArray(models) ? models : []) {
@@ -52,5 +86,43 @@
     return next;
   }
 
-  return { groupModelsByPrefix, modelGroupKey, modelPrefix, modelSelectionKey, setModelsSelected };
+  function setUnifiedModelsSelected(draft, models, selected) {
+    const next = new Map(draft instanceof Map ? draft : []);
+    for (const model of Array.isArray(models) ? models : []) {
+      const modelId = String(model?.id || '').trim();
+      if (!modelId) continue;
+      const key = unifiedModelSelectionKey(modelId);
+      if (!selected) {
+        next.delete(key);
+        continue;
+      }
+      const providerIds = (model.providers || []).map((provider) => String(provider.id));
+      if (!providerIds.length) continue;
+      const previous = next.get(key) || {};
+      const previousProviderId = providerIds.includes(previous.upstreamId) ? previous.upstreamId : providerIds[0];
+      const automatic = providerIds.length > 1 && (!previous.upstreamMode || previous.upstreamMode === 'auto');
+      next.set(key, {
+        ...previous,
+        upstreamId: automatic ? providerIds[0] : previousProviderId,
+        upstreamIds: automatic ? providerIds : [previousProviderId],
+        upstreamMode: automatic ? 'auto' : 'fixed',
+        upstreamModel: modelId,
+        localModel: previous.localModel || modelId,
+        thinkingLevel: previous.thinkingLevel || 'auto',
+        enabled: true
+      });
+    }
+    return next;
+  }
+
+  return {
+    groupModelsByPrefix,
+    mergeModelsById,
+    modelGroupKey,
+    modelPrefix,
+    modelSelectionKey,
+    setModelsSelected,
+    setUnifiedModelsSelected,
+    unifiedModelSelectionKey
+  };
 }));
