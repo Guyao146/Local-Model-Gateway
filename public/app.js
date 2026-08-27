@@ -123,7 +123,7 @@ function render() {
     return `<article class="item-card"><div><div class="item-title"><code>${escapeHtml(item.localModel)}</code> <span class="muted">→</span> <code>${escapeHtml(item.upstreamModel)}</code></div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">策略：${strategy}</span><span>主上游：${escapeHtml(upstream?.name || '已删除')}</span>${fallbacks ? `<span>备用：${escapeHtml(fallbacks)}</span>` : ''}</div></div><div class="item-actions"><button class="text-button" data-action="edit-route" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button delete" data-action="delete-route" data-id="${escapeHtml(item.id)}">删除</button></div></article>`;
   }).join('') : '<div class="empty">还没有路由。只有一个启用的上游时，未配置路由的模型会自动转发。</div>';
 
-  $('#keyList').innerHTML = localApiKeys.length ? localApiKeys.map((item) => `<article class="item-card"><div><div class="item-title">${escapeHtml(item.name)}</div><div class="key-value">${escapeHtml(item.key)}</div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div></div><div class="item-actions"><button class="text-button" data-action="edit-key" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button" data-action="toggle-key" data-id="${escapeHtml(item.id)}">${item.enabled ? '停用' : '启用'}</button><button class="text-button delete" data-action="delete-key" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有本地调用 Key。</div>';
+  $('#keyList').innerHTML = localApiKeys.length ? localApiKeys.map((item) => `<article class="item-card"><div><div class="item-title">${escapeHtml(item.name)}</div><div class="key-value">${escapeHtml(item.key)}</div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div></div><div class="item-actions"><button class="text-button" data-action="copy-key" data-id="${escapeHtml(item.id)}">复制</button><button class="text-button" data-action="edit-key" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button" data-action="toggle-key" data-id="${escapeHtml(item.id)}">${item.enabled ? '停用' : '启用'}</button><button class="text-button delete" data-action="delete-key" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有本地调用 Key。</div>';
 
   const settings = state.config.settings || {};
   $('#upstreamTimeoutMs').value = settings.upstreamTimeoutMs ?? 600000;
@@ -441,6 +441,15 @@ async function toggleKey(item) {
   } catch (error) { toast(error.message, 'error'); }
 }
 
+async function copyLocalKey(item) {
+  try {
+    await navigator.clipboard.writeText(item.key);
+    toast(`${item.name} 的 Key 已复制`);
+  } catch {
+    window.prompt('浏览器无法自动写入剪贴板，请手工复制：', item.key);
+  }
+}
+
 async function handleListClick(event) {
   const button = event.target.closest('[data-action]');
   if (!button) return;
@@ -449,6 +458,7 @@ async function handleListClick(event) {
   if (button.dataset.action === 'edit-route') fillRouteForm(item);
   if (button.dataset.action === 'edit-key') fillKeyEditForm(item);
   if (button.dataset.action === 'toggle-key') await toggleKey(item);
+  if (button.dataset.action === 'copy-key') await copyLocalKey(item);
   if (button.dataset.action === 'reset-health') {
     button.disabled = true;
     try {
@@ -482,22 +492,16 @@ async function handleListClick(event) {
   if (button.dataset.action === 'delete-upstream') await deleteItem('upstreams', button.dataset.id, '上游');
   if (button.dataset.action === 'delete-route') await deleteItem('routes', button.dataset.id, '路由');
   if (button.dataset.action === 'delete-key') await deleteItem('local-keys', button.dataset.id, '本地 Key');
-  if (button.dataset.action === 'copy-key') {
-    // The API intentionally never returns an existing full key after the initial creation.
-    toast('出于安全原因，已有 Key 只显示掩码；如需复制请新建一个 Key。', 'error');
-  }
 }
 
 async function createKey(event) {
   event.preventDefault();
   try {
-    const result = await api('/api/admin/local-keys', { method: 'POST', body: JSON.stringify({ name: $('#keyName').value.trim() }) });
+    await api('/api/admin/local-keys', { method: 'POST', body: JSON.stringify({ name: $('#keyName').value.trim() }) });
     closeDialog($('#keyDialog'));
     $('#keyName').value = '';
     await loadConfig();
-    const createdKey = result.item.key;
-    try { await navigator.clipboard.writeText(createdKey); } catch { /* clipboard permission is optional */ }
-    window.prompt('本地 Key 已创建，请复制并妥善保存（之后只显示掩码）：', createdKey);
+    toast('本地 Key 已创建，可在列表中查看或复制');
   } catch (error) { toast(error.message, 'error'); }
 }
 

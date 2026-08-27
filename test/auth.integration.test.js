@@ -205,6 +205,7 @@ async function main() {
       headers: { ...remoteHeaders, Cookie: sessionCookie }
     });
     assert.equal(authenticatedConfig.status, 200, authenticatedConfig.raw);
+    assert.equal(authenticatedConfig.json.localApiKeys[0].key, storedConfig.localApiKeys[0].key, 'Authentik 管理会话应能查看完整本地 Key');
     const remoteWriteWithoutOrigin = await request(`${baseUrl}/api/admin/settings`, {
       method: 'PUT',
       headers: { ...remoteHeaders, Cookie: sessionCookie, 'Content-Type': 'application/json' },

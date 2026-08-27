@@ -100,6 +100,9 @@ async function main() {
     const output = await waitForOutput(gateway, '本地管理访问：无需认证');
     const config = JSON.parse(fs.readFileSync(path.join(dataDirectory, 'config.json'), 'utf8'));
     const adminHeaders = {};
+    const visibleConfig = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/config`, { headers: adminHeaders });
+    assert.equal(visibleConfig.status, 200, JSON.stringify(visibleConfig.body));
+    assert.equal(visibleConfig.body.localApiKeys[0].key, config.localApiKeys[0].key, '管理后台应返回完整本地调用 Key');
     const add = (name, port) => requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
       method: 'POST', headers: adminHeaders, body: JSON.stringify({ name, baseUrl: `http://127.0.0.1:${port}/v1`, protocol: 'openai', authType: 'none', apiKey: '', models: 'test-model' })
     });
@@ -296,11 +299,28 @@ async function main() {
       method: 'PUT', headers: adminHeaders, body: JSON.stringify({ maxConcurrentRequests: 0, requestsPerMinute: 0 })
     });
     assert.equal(unlimitedSettings.status, 200, JSON.stringify(unlimitedSettings.body));
+    const createdKey = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/local-keys`, {
+      method: 'POST', headers: adminHeaders, body: JSON.stringify({ name: 'visible-after-create' })
+    });
+    assert.equal(createdKey.status, 201, JSON.stringify(createdKey.body));
+    assert.match(createdKey.body.item.key, /^sk-local_/);
+    const configAfterKeyCreate = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/config`, { headers: adminHeaders });
+    assert.equal(configAfterKeyCreate.status, 200, JSON.stringify(configAfterKeyCreate.body));
+    assert.equal(
+      configAfterKeyCreate.body.localApiKeys.find((item) => item.id === createdKey.body.item.id)?.key,
+      createdKey.body.item.key,
+      '新建后重新读取配置仍应返回完整本地 Key'
+    );
+    const deleteCreatedKey = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/local-keys/${encodeURIComponent(createdKey.body.item.id)}`, {
+      method: 'DELETE', headers: adminHeaders
+    });
+    assert.equal(deleteCreatedKey.status, 200, JSON.stringify(deleteCreatedKey.body));
     const keyId = config.localApiKeys[0].id;
     const disabledKey = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/local-keys/${encodeURIComponent(keyId)}`, {
       method: 'PUT', headers: adminHeaders, body: JSON.stringify({ name: 'disabled-key', enabled: false })
     });
     assert.equal(disabledKey.status, 200, JSON.stringify(disabledKey.body));
+    assert.equal(disabledKey.body.key, config.localApiKeys[0].key, '更新本地 Key 后仍应返回完整值');
     const disabledRequest = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/models`, {
       headers: { Authorization: `Bearer ${config.localApiKeys[0].key}` }
     });

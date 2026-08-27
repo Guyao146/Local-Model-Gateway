@@ -70,7 +70,7 @@
           <div><span class="section-number">05</span><h2>本地调用 Key</h2></div>
           <button id="addKeyButton" class="button primary">＋ 新建 Key</button>
         </div>
-        <p class="help">本地 APP 调用时使用这里的 Key。请求头可用 <code>Authorization: Bearer ...</code> 或 <code>x-api-key: ...</code>。</p>
+        <p class="help">本地 APP 调用时使用这里的 Key。完整 Key 可直接查看和复制；请求头可用 <code>Authorization: Bearer ...</code> 或 <code>x-api-key: ...</code>。</p>
         <div id="keyList" class="key-list"></div>
       </section>
 
@@ -164,7 +164,7 @@
     <form method="dialog" id="keyForm" class="dialog-form">
       <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>新建本地 Key</h2></div><button type="button" data-dialog-close="keyDialog" class="icon-button" aria-label="关闭">×</button></div>
       <label>名称<input id="keyName" required placeholder="例如：桌面 APP"></label>
-      <p class="help">留空自动生成。完整 Key 只会在创建成功时显示一次，请及时复制保存。</p>
+      <p class="help">留空自动生成。创建后可随时在本地调用 Key 列表中查看和复制。</p>
       <div class="dialog-actions"><button type="button" data-dialog-close="keyDialog" class="button secondary">取消</button><button value="default" class="button primary">创建 Key</button></div>
     </form>
   </dialog>
@@ -175,7 +175,7 @@
       <input id="editKeyId" type="hidden">
       <label>名称<input id="editKeyName" required></label>
       <label class="check-label"><input id="editKeyEnabled" type="checkbox"> 允许使用这个 Key</label>
-      <p class="help">出于安全原因不能在这里查看或修改完整 Key。如需更换密钥，请新建一个 Key 后删除旧 Key。</p>
+      <p class="help">完整 Key 显示在本地调用 Key 列表中。如需更换密钥，请新建一个 Key 后删除旧 Key。</p>
       <div class="dialog-actions"><button type="button" data-dialog-close="keyEditDialog" class="button secondary">取消</button><button value="default" class="button primary">保存修改</button></div>
     </form>
   </dialog>

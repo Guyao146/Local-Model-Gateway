@@ -114,10 +114,7 @@ function maskSecret(value) {
 function publicConfig(config) {
   return {
     version: config.version,
-    localApiKeys: config.localApiKeys.map((item) => ({
-      ...item,
-      key: maskSecret(item.key)
-    })),
+    localApiKeys: config.localApiKeys.map((item) => ({ ...item })),
     upstreams: config.upstreams.map((item) => ({
       ...item,
       apiKey: maskSecret(item.apiKey)

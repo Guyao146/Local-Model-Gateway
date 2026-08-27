@@ -1706,7 +1706,7 @@ async function handleAdmin(req, res, pathname) {
     const item = localKeyFromBody(body, config.localApiKeys[index]);
     config.localApiKeys[index] = item;
     saveConfig(config);
-    sendJson(res, 200, { ...item, key: maskSecret(item.key) });
+    sendJson(res, 200, { ...item });
     return;
   }
   if (keyMatch && req.method === 'DELETE') {

@@ -144,6 +144,8 @@ async function main() {
     const anthropicUpstream = await addUpstream('Anthropic Model Catalog', anthropicPort, 'anthropic', 'claude-3-7-sonnet');
     assert.equal(openaiUpstream.status, 201, output);
     assert.equal(anthropicUpstream.status, 201, output);
+    assert.notEqual(openaiUpstream.body.apiKey, 'saved-secret', '上游 API Key 仍应保持脱敏');
+    assert.match(openaiUpstream.body.apiKey, /••••/);
 
     const existingPreview = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/model-catalog/preview`, {
       method: 'POST',
