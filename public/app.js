@@ -285,6 +285,8 @@ function fillUpstreamForm(item = null) {
   $('#upstreamApiKey').value = '';
   $('#upstreamApiKey').placeholder = item ? '留空表示保留原 Key' : '输入上游 API Key';
   $('#upstreamModels').value = (item?.models || []).join('\n');
+  $('#upstreamModelFetchMessage').textContent = '从上游的 /v1/models 自动获取';
+  $('#upstreamModelFetchMessage').className = 'muted';
   $('#upstreamEnabled').checked = item?.enabled !== false;
   openDialog($('#upstreamDialog'));
 }
@@ -312,14 +314,55 @@ function fillKeyEditForm(item) {
   openDialog($('#keyEditDialog'));
 }
 
-async function saveUpstream(event) {
-  event.preventDefault();
-  const id = $('#upstreamId').value;
-  const payload = {
+function upstreamPayloadFromForm() {
+  return {
     name: $('#upstreamName').value.trim(), baseUrl: $('#upstreamBaseUrl').value.trim(), protocol: $('#upstreamProtocol').value,
     authType: $('#upstreamAuthType').value, apiKey: $('#upstreamApiKey').value, models: $('#upstreamModels').value,
     enabled: $('#upstreamEnabled').checked
   };
+}
+
+async function fetchUpstreamModels() {
+  const button = $('#fetchUpstreamModelsButton');
+  const message = $('#upstreamModelFetchMessage');
+  const payload = upstreamPayloadFromForm();
+  if (!payload.baseUrl) {
+    message.textContent = '请先填写上游地址';
+    message.className = 'error';
+    return;
+  }
+  if (payload.authType !== 'none' && !payload.apiKey && !$('#upstreamId').value) {
+    message.textContent = '请先填写上游 API Key';
+    message.className = 'error';
+    return;
+  }
+  button.disabled = true;
+  button.textContent = '拉取中…';
+  message.textContent = '正在请求上游模型列表…';
+  message.className = 'muted';
+  try {
+    const result = await api('/api/admin/model-catalog/preview', {
+      method: 'POST',
+      body: JSON.stringify({ ...payload, upstreamId: $('#upstreamId').value })
+    });
+    $('#upstreamModels').value = result.models.join('\n');
+    message.textContent = `已拉取 ${result.count} 个模型，请点击“保存上游”完成保存`;
+    message.className = 'success';
+    toast(`已从上游拉取 ${result.count} 个模型`);
+  } catch (error) {
+    message.textContent = error.message;
+    message.className = 'error';
+    toast(`拉取模型失败：${error.message}`, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = '拉取模型';
+  }
+}
+
+async function saveUpstream(event) {
+  event.preventDefault();
+  const id = $('#upstreamId').value;
+  const payload = upstreamPayloadFromForm();
   try {
     await api(id ? `/api/admin/upstreams/${encodeURIComponent(id)}` : '/api/admin/upstreams', { method: id ? 'PUT' : 'POST', body: JSON.stringify(payload) });
     closeDialog($('#upstreamDialog'));
@@ -514,6 +557,7 @@ $('#addRouteButton').addEventListener('click', () => {
   fillRouteForm();
 });
 $('#addKeyButton').addEventListener('click', () => openDialog($('#keyDialog')));
+$('#fetchUpstreamModelsButton').addEventListener('click', fetchUpstreamModels);
 document.querySelectorAll('[data-dialog-close]').forEach((button) => {
   button.addEventListener('click', () => closeDialog(document.getElementById(button.dataset.dialogClose)));
 });

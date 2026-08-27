@@ -137,7 +137,8 @@
         <label>鉴权方式<select id="upstreamAuthType"><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option><option value="none">不添加鉴权</option></select></label>
       </div>
       <label>API Key<input id="upstreamApiKey" type="password" autocomplete="off" placeholder="新增时必填；编辑时留空表示保留原 Key"></label>
-      <label>上游模型列表 <span class="muted">（可选，每行一个）</span><textarea id="upstreamModels" rows="4" placeholder="claude-3-5-sonnet\ngpt-4o"></textarea></label>
+      <label>上游模型列表 <span class="muted">（可选，每行一个）</span><textarea id="upstreamModels" rows="4" placeholder="填写地址和 API Key 后点击下方“拉取模型”"></textarea></label>
+      <div class="model-fetch-row"><span id="upstreamModelFetchMessage" class="muted">从上游的 /v1/models 自动获取</span><button id="fetchUpstreamModelsButton" type="button" class="button secondary">拉取模型</button></div>
       <label class="check-label"><input id="upstreamEnabled" type="checkbox" checked> 启用这个上游</label>
       <div class="dialog-actions"><button type="button" data-dialog-close="upstreamDialog" class="button secondary">取消</button><button id="saveUpstreamButton" value="default" class="button primary">保存上游</button></div>
     </form>

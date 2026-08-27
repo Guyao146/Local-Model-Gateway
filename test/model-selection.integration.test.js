@@ -54,11 +54,12 @@ function jsonResponse(res, status, body) {
 }
 
 async function main() {
-  const observed = { openai: [], anthropic: [] };
+  const observed = { openai: [], anthropic: [], modelHeaders: [] };
   const openai = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
     if (req.url === '/v1/models') {
+      observed.modelHeaders.push(req.headers);
       jsonResponse(res, 200, {
         object: 'list',
         data: [
@@ -122,15 +123,35 @@ async function main() {
     const config = JSON.parse(fs.readFileSync(path.join(dataDirectory, 'config.json'), 'utf8'));
     const adminHeaders = { 'X-Admin-Token': config.adminToken };
     const localHeaders = { Authorization: `Bearer ${config.localApiKeys[0].key}` };
-    const addUpstream = (name, port, protocol, models) => requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
+    const preview = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/model-catalog/preview`, {
       method: 'POST',
       headers: adminHeaders,
-      body: JSON.stringify({ name, baseUrl: `http://127.0.0.1:${port}/v1`, protocol, authType: 'none', apiKey: '', models })
+      body: JSON.stringify({ baseUrl: `http://127.0.0.1:${openaiPort}/v1`, protocol: 'openai', authType: 'bearer', apiKey: 'preview-secret' })
     });
-    const openaiUpstream = await addUpstream('OpenAI Model Catalog', openaiPort, 'openai', 'o3-mini,gpt-plain');
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    assert.equal(preview.body.count, 2);
+    assert.deepEqual(preview.body.models, ['gpt-plain', 'o3-mini']);
+    assert.equal(observed.modelHeaders.at(-1).authorization, 'Bearer preview-secret');
+    const configAfterPreview = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/config`, { headers: adminHeaders });
+    assert.equal(configAfterPreview.body.upstreams.length, 0, '预览拉取不应提前保存上游');
+
+    const addUpstream = (name, port, protocol, models, authType = 'none', apiKey = '') => requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ name, baseUrl: `http://127.0.0.1:${port}/v1`, protocol, authType, apiKey, models })
+    });
+    const openaiUpstream = await addUpstream('OpenAI Model Catalog', openaiPort, 'openai', 'o3-mini,gpt-plain', 'bearer', 'saved-secret');
     const anthropicUpstream = await addUpstream('Anthropic Model Catalog', anthropicPort, 'anthropic', 'claude-3-7-sonnet');
     assert.equal(openaiUpstream.status, 201, output);
     assert.equal(anthropicUpstream.status, 201, output);
+
+    const existingPreview = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/model-catalog/preview`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ upstreamId: openaiUpstream.body.id, baseUrl: `http://127.0.0.1:${openaiPort}/v1`, protocol: 'openai', authType: 'bearer', apiKey: '' })
+    });
+    assert.equal(existingPreview.status, 200, JSON.stringify(existingPreview.body));
+    assert.equal(observed.modelHeaders.at(-1).authorization, 'Bearer saved-secret');
 
     const sync = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/model-catalog/sync`, {
       method: 'POST', headers: adminHeaders, body: '{}'

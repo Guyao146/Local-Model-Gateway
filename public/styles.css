@@ -53,6 +53,9 @@ textarea { resize: vertical; line-height: 1.5; }
 .form-message { min-height: 17px; margin-top: 10px; color: var(--muted); font-size: 12px; }
 .form-message.error { color: var(--danger); }
 .form-message.success { color: var(--accent); }
+.model-fetch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: -8px; }
+.model-fetch-row .success { color: var(--accent); }
+.model-fetch-row .error { color: var(--danger); }
 .card-list, .key-list { display: grid; gap: 10px; margin-top: 18px; }
 .item-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 16px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }
 .item-title { font-weight: 700; font-size: 14px; }

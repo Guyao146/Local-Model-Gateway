@@ -1305,7 +1305,7 @@ async function testUpstream(upstream) {
   return { ok: response.ok, status: response.status, protocol: upstream.protocol, endpoint, body };
 }
 
-async function syncUpstreamModels(upstream) {
+async function fetchUpstreamModelCatalog(upstream) {
   const endpoint = resolveEndpoint(upstream.baseUrl, '/v1/models');
   const response = await fetchWithTimeout(endpoint, { method: 'GET', headers: upstreamHeaders(upstream) });
   const body = await readResponseJson(response);
@@ -1313,14 +1313,27 @@ async function syncUpstreamModels(upstream) {
     throw Object.assign(new Error(errorMessage(body, `上游返回 HTTP ${response.status}`)), { statusCode: 502 });
   }
   const syncedAt = nowIso();
-  const syncedCatalog = normalizeModelCatalog(
-    Array.isArray(body.data) ? body.data : [],
+  const rawModels = Array.isArray(body)
+    ? body
+    : Array.isArray(body.data)
+      ? body.data
+      : Array.isArray(body.models)
+        ? body.models
+        : [];
+  const modelCatalog = normalizeModelCatalog(
+    rawModels,
     upstream.modelCatalog || [],
     upstream.protocol
   ).map((item) => ({ ...item, source: 'sync', syncedAt }));
+  const models = modelCatalog.map((item) => item.id).sort((left, right) => left.localeCompare(right));
+  return { count: models.length, models, modelCatalog, syncedAt, endpoint };
+}
+
+async function syncUpstreamModels(upstream) {
+  const fetched = await fetchUpstreamModelCatalog(upstream);
   const manualCatalog = catalogForUpstream(upstream).filter((item) => item.source !== 'sync');
   const catalogById = new Map(manualCatalog.map((item) => [item.id, item]));
-  for (const item of syncedCatalog) catalogById.set(item.id, item);
+  for (const item of fetched.modelCatalog) catalogById.set(item.id, item);
   const modelCatalog = [...catalogById.values()];
   const models = modelCatalog.map((item) => item.id).sort((left, right) => left.localeCompare(right));
   if (!models.length) {
@@ -1328,7 +1341,7 @@ async function syncUpstreamModels(upstream) {
   }
   upstream.models = models;
   upstream.modelCatalog = modelCatalog;
-  upstream.modelsSyncedAt = syncedAt;
+  upstream.modelsSyncedAt = fetched.syncedAt;
   upstream.updatedAt = nowIso();
   saveConfig(config);
   return { count: models.length, models, modelCatalog, syncedAt: upstream.modelsSyncedAt };
@@ -1467,6 +1480,34 @@ async function handleAdmin(req, res, pathname) {
   if (req.method === 'POST' && pathname === '/api/admin/model-catalog/sync') {
     const result = await syncAllUpstreamModels();
     sendJson(res, 200, result);
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/admin/model-catalog/preview') {
+    const body = await readBody(req);
+    const upstreamId = String(body.upstreamId || '').trim();
+    const existing = upstreamId ? config.upstreams.find((item) => item.id === upstreamId) : null;
+    if (upstreamId && !existing) {
+      sendJson(res, 404, { ok: false, error: { message: '上游不存在' } });
+      return;
+    }
+    if (!body.baseUrl) {
+      sendJson(res, 400, { ok: false, error: { message: '请先填写上游地址' } });
+      return;
+    }
+    let upstream;
+    try {
+      upstream = upstreamFromBody({ ...body, name: body.name || existing?.name || '待添加上游' }, existing || {});
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: { message: error.message } });
+      return;
+    }
+    try {
+      const result = await fetchUpstreamModelCatalog(upstream);
+      if (!result.count) throw Object.assign(new Error('上游没有返回可识别的模型列表'), { statusCode: 502 });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, error.statusCode || 502, { ok: false, error: { message: error.message } });
+    }
     return;
   }
   if (req.method === 'PUT' && pathname === '/api/admin/model-selections') {
