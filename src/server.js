@@ -1520,7 +1520,7 @@ function importConfig(rawConfig, preserveCredentials = true) {
 
 function serveStatic(res, pathname) {
   const fileName = pathname === '/' ? 'index.html' : pathname.slice(1);
-  if (!['index.html', 'app.js', 'styles.css'].includes(fileName)) {
+  if (!['index.html', 'app.js', 'model-groups.js', 'styles.css'].includes(fileName)) {
     sendText(res, 404, 'Not found');
     return;
   }
@@ -1529,7 +1529,7 @@ function serveStatic(res, pathname) {
     sendText(res, 404, 'Not found');
     return;
   }
-  const types = { 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'styles.css': 'text/css; charset=utf-8' };
+  const types = { 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'model-groups.js': 'text/javascript; charset=utf-8', 'styles.css': 'text/css; charset=utf-8' };
   sendText(res, 200, fs.readFileSync(filePath, 'utf8'), types[fileName]);
 }
 
