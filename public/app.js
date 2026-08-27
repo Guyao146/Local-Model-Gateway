@@ -2,6 +2,7 @@ const state = {
   config: null,
   metrics: null,
   health: null,
+  balances: null,
   catalog: null,
   expandedProviders: new Set(),
   expandedPrefixes: new Set(),
@@ -70,6 +71,37 @@ function healthLabel(item) {
   return '健康';
 }
 
+function formatBalanceNumber(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '-';
+  return Number(value).toLocaleString(undefined, { maximumFractionDigits: 6 });
+}
+
+function balanceDetails(item) {
+  if (!item || item.state === 'idle') return '<span class="balance-status muted">余额：尚未查询</span>';
+  if (item.state !== 'ok' || !item.balance) {
+    const label = item.state === 'unsupported' ? '不支持余额查询' : '余额查询失败';
+    const status = item.httpStatus ? `（HTTP ${item.httpStatus}）` : '';
+    return `<span class="balance-status error-text">余额：${label}${escapeHtml(status)}</span><span class="balance-error-message" title="${escapeHtml(item.message || label)}">${escapeHtml(item.message || label)}</span>${item.checkedAt ? `<span>查询于：${escapeHtml(formatTime(item.checkedAt))}</span>` : ''}`;
+  }
+  if (item.balance.type === 'platform-quotas') {
+    const windows = (item.balance.platforms || []).flatMap((platform) => (platform.windows || []).map((window) => {
+      const limit = window.limit === null ? '未设上限' : `$${formatBalanceNumber(window.limit)}`;
+      const remaining = window.remaining === null ? '' : ` · 剩余 $${formatBalanceNumber(window.remaining)}`;
+      const reset = window.resetAt ? ` · ${formatTime(window.resetAt)} 重置` : '';
+      return `${platform.platform} ${window.period}：已用 $${formatBalanceNumber(window.used)} / ${limit}${remaining}${reset}`;
+    }));
+    return `<span class="balance-status success-text">额度：${escapeHtml(windows.join('；') || '未设置平台额度')}</span><span>查询于：${escapeHtml(formatTime(item.checkedAt))}</span>`;
+  }
+  const balance = item.balance;
+  const unit = balance.unit ? ` ${balance.unit}` : '';
+  const remaining = balance.unlimited ? '无限' : `${formatBalanceNumber(balance.remaining)}${unit}`;
+  const parts = [`剩余：${remaining}`];
+  if (balance.used !== null) parts.push(`已用：${formatBalanceNumber(balance.used)}${unit}`);
+  if (balance.granted !== null) parts.push(`总额度：${formatBalanceNumber(balance.granted)}${unit}`);
+  if (balance.expiresAt) parts.push(`到期：${formatTime(balance.expiresAt)}`);
+  return `<span class="balance-status success-text">${escapeHtml(parts.join(' · '))}</span><span>查询于：${escapeHtml(formatTime(item.checkedAt))}</span>`;
+}
+
 function thinkingLabel(level) {
   return { auto: '自动', off: '关闭', low: '低', medium: '中', high: '高' }[level] || '自动';
 }
@@ -131,7 +163,7 @@ function renderPrefixGroup(provider, prefix, visibleModels, selections) {
   const allModels = provider.models.filter((model) => modelPrefix(model.id) === prefix);
   const selectedCount = allModels.filter((model) => selections.has(modelSelectionKey(provider.id, model.id))).length;
   const collapsed = state.expandedPrefixes.has(prefixKey) ? '' : ' collapsed';
-  return `<section class="model-prefix${collapsed}" data-prefix-key="${escapeHtml(prefixKey)}"><div class="model-prefix-header"><button type="button" class="model-prefix-toggle" data-action="toggle-prefix" data-prefix-key="${escapeHtml(prefixKey)}" aria-expanded="${state.expandedPrefixes.has(prefixKey)}"><span class="prefix-title"><span class="prefix-arrow">⌄</span><code>${escapeHtml(prefix)}</code></span><span class="prefix-meta">${selectedCount}/${allModels.length} 已选</span></button><div class="model-group-actions"><button type="button" class="text-button" data-action="select-prefix" data-provider-id="${escapeHtml(provider.id)}" data-prefix="${escapeHtml(prefix)}">全部勾选</button><button type="button" class="text-button" data-action="clear-prefix" data-provider-id="${escapeHtml(provider.id)}" data-prefix="${escapeHtml(prefix)}">全部取消</button></div></div><div class="model-prefix-body">${visibleModels.map((model) => renderModelRow(provider, model, selections)).join('')}</div></section>`;
+  return `<section class="model-prefix${collapsed}" data-prefix-key="${escapeHtml(prefixKey)}"><div class="model-prefix-header"><button type="button" class="model-prefix-toggle" data-action="toggle-prefix" data-prefix-key="${escapeHtml(prefixKey)}" aria-expanded="${state.expandedPrefixes.has(prefixKey)}"><span class="prefix-title"><span class="prefix-arrow" aria-hidden="true"></span><code>${escapeHtml(prefix)}</code></span><span class="prefix-meta">${selectedCount}/${allModels.length} 已选</span></button><div class="model-group-actions"><button type="button" class="text-button" data-action="select-prefix" data-provider-id="${escapeHtml(provider.id)}" data-prefix="${escapeHtml(prefix)}">全部勾选</button><button type="button" class="text-button" data-action="clear-prefix" data-provider-id="${escapeHtml(provider.id)}" data-prefix="${escapeHtml(prefix)}">全部取消</button></div></div><div class="model-prefix-body">${visibleModels.map((model) => renderModelRow(provider, model, selections)).join('')}</div></section>`;
 }
 
 function renderModelCatalog() {
@@ -151,7 +183,7 @@ function renderModelCatalog() {
     const collapsed = state.expandedProviders.has(provider.id) ? '' : ' collapsed';
     const selectedCount = provider.models.filter((model) => selections.has(modelSelectionKey(provider.id, model.id))).length;
     const prefixGroups = groupModelsByPrefix(models);
-    return `<section class="model-provider${collapsed}" data-provider-id="${escapeHtml(provider.id)}"><div class="model-provider-header"><button type="button" class="model-provider-toggle" data-action="toggle-provider" data-provider-id="${escapeHtml(provider.id)}" aria-expanded="${state.expandedProviders.has(provider.id)}"><span class="provider-title"><span class="provider-arrow">⌄</span>${escapeHtml(provider.name)}<span class="tag">${escapeHtml(provider.protocol)}</span></span><span class="provider-meta">${selectedCount}/${provider.models.length} 已选 · ${provider.modelsSyncedAt ? `同步于 ${escapeHtml(formatTime(provider.modelsSyncedAt))}` : '手工模型'}</span></button><div class="model-group-actions"><button type="button" class="text-button" data-action="select-provider" data-provider-id="${escapeHtml(provider.id)}">全部勾选</button><button type="button" class="text-button" data-action="clear-provider" data-provider-id="${escapeHtml(provider.id)}">全部取消</button></div></div><div class="model-provider-body">${prefixGroups.length ? prefixGroups.map((group) => renderPrefixGroup(provider, group.prefix, group.models, selections)).join('') : '<div class="empty">没有匹配的模型</div>'}</div></section>`;
+    return `<section class="model-provider${collapsed}" data-provider-id="${escapeHtml(provider.id)}"><div class="model-provider-header"><button type="button" class="model-provider-toggle" data-action="toggle-provider" data-provider-id="${escapeHtml(provider.id)}" aria-expanded="${state.expandedProviders.has(provider.id)}"><span class="provider-title"><span class="provider-arrow" aria-hidden="true"></span>${escapeHtml(provider.name)}<span class="tag">${escapeHtml(provider.protocol)}</span></span><span class="provider-meta">${selectedCount}/${provider.models.length} 已选 · ${provider.modelsSyncedAt ? `同步于 ${escapeHtml(formatTime(provider.modelsSyncedAt))}` : '手工模型'}</span></button><div class="model-group-actions"><button type="button" class="text-button" data-action="select-provider" data-provider-id="${escapeHtml(provider.id)}">全部勾选</button><button type="button" class="text-button" data-action="clear-provider" data-provider-id="${escapeHtml(provider.id)}">全部取消</button></div></div><div class="model-provider-body">${prefixGroups.length ? prefixGroups.map((group) => renderPrefixGroup(provider, group.prefix, group.models, selections)).join('') : '<div class="empty">没有匹配的模型</div>'}</div></section>`;
   }).join('') : '<div class="empty">没有匹配的模型。</div>';
 }
 
@@ -159,12 +191,14 @@ function render() {
   if (!state.config) return;
   const { upstreams, routes, localApiKeys } = state.config;
   const healthById = new Map((state.health?.items || []).map((item) => [item.upstreamId, item]));
+  const balanceById = new Map((state.balances?.items || []).map((item) => [item.upstreamId, item]));
   $('#upstreamList').innerHTML = upstreams.length ? upstreams.map((item) => `
     <article class="item-card">
       <div><div class="item-title">${escapeHtml(item.name)}</div>
         <div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">${item.protocol === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容'}</span><span class="tag ${healthById.get(item.id)?.state === 'open' ? 'off' : 'active'}">${healthLabel(healthById.get(item.id))}</span><span>${escapeHtml(item.baseUrl)}</span></div>
         <div class="item-meta"><span>Key：${escapeHtml(item.apiKey)}</span><span>模型：${escapeHtml((item.models || []).join(', ') || '未填写（依赖路由）')}</span>${item.modelsSyncedAt ? `<span>同步于：${escapeHtml(formatTime(item.modelsSyncedAt))}</span>` : ''}${healthById.get(item.id)?.consecutiveFailures ? `<span>连续失败：${escapeHtml(healthById.get(item.id).consecutiveFailures)} 次</span>` : ''}${healthById.get(item.id)?.openUntil ? `<span>冷却至：${escapeHtml(formatTime(healthById.get(item.id).openUntil))}</span>` : ''}</div>
-      </div><div class="item-actions"><button class="text-button" data-action="test-upstream" data-id="${escapeHtml(item.id)}">测试连接</button><button class="text-button" data-action="reset-health" data-id="${escapeHtml(item.id)}">重置状态</button><button class="text-button" data-action="sync-upstream" data-id="${escapeHtml(item.id)}">同步模型</button><button class="text-button" data-action="edit-upstream" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button delete" data-action="delete-upstream" data-id="${escapeHtml(item.id)}">删除</button></div>
+        <div class="item-meta balance-meta">${balanceDetails(balanceById.get(item.id))}</div>
+      </div><div class="item-actions"><button class="text-button" data-action="query-upstream-balance" data-id="${escapeHtml(item.id)}">查询余额</button><button class="text-button" data-action="test-upstream" data-id="${escapeHtml(item.id)}">测试连接</button><button class="text-button" data-action="reset-health" data-id="${escapeHtml(item.id)}">重置状态</button><button class="text-button" data-action="sync-upstream" data-id="${escapeHtml(item.id)}">同步模型</button><button class="text-button" data-action="edit-upstream" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button delete" data-action="delete-upstream" data-id="${escapeHtml(item.id)}">删除</button></div>
     </article>`).join('') : '<div class="empty">还没有上游站点。添加一个 sub2api / newapi 地址后即可开始路由。</div>';
 
   $('#routeList').innerHTML = routes.length ? routes.map((item) => {
@@ -245,6 +279,11 @@ async function loadConfig() {
       state.health = await api('/api/admin/upstream-status');
     } catch {
       state.health = null;
+    }
+    try {
+      state.balances = await api('/api/admin/upstream-balances');
+    } catch {
+      state.balances = null;
     }
     try {
       state.catalog = await api('/api/admin/model-catalog');
@@ -328,6 +367,30 @@ async function syncAllModels() {
   button.textContent = '拉取全部模型';
 }
 
+async function queryAllBalances() {
+  const button = $('#queryAllBalancesButton');
+  button.disabled = true;
+  button.textContent = '查询中…';
+  try {
+    state.balances = await api('/api/admin/upstream-balances/query', { method: 'POST', body: '{}' });
+    render();
+    const succeeded = state.balances.items.filter((item) => item.state === 'ok').length;
+    const unsupported = state.balances.items.filter((item) => item.state === 'unsupported').length;
+    const failed = state.balances.items.length - succeeded - unsupported;
+    toast(`余额查询完成：成功 ${succeeded}，不支持 ${unsupported}，失败 ${failed}${failed ? '；请查看上游卡片详情' : ''}`, failed ? 'error' : '');
+  } catch (error) {
+    toast(`查询全部余额失败：${error.message}`, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = '查询全部余额';
+  }
+}
+
+function setBalanceResult(result) {
+  const items = (state.balances?.items || []).filter((item) => item.upstreamId !== result.upstreamId);
+  state.balances = { items: [...items, result] };
+}
+
 function toggleProvider(providerId) {
   syncRenderedModelDraft();
   if (state.expandedProviders.has(providerId)) state.expandedProviders.delete(providerId);
@@ -371,6 +434,7 @@ function fillUpstreamForm(item = null) {
   $('#upstreamAuthType').value = item?.authType || (item?.protocol === 'anthropic' ? 'x-api-key' : 'bearer');
   $('#upstreamApiKey').value = '';
   $('#upstreamApiKey').placeholder = item ? '留空表示保留原 Key' : '输入上游 API Key';
+  $('#upstreamBalanceEndpoint').value = item?.balanceEndpoint || '';
   $('#upstreamModels').value = (item?.models || []).join('\n');
   $('#upstreamModelFetchMessage').textContent = '从上游的 /v1/models 自动获取';
   $('#upstreamModelFetchMessage').className = 'muted';
@@ -405,6 +469,7 @@ function upstreamPayloadFromForm() {
   return {
     name: $('#upstreamName').value.trim(), baseUrl: $('#upstreamBaseUrl').value.trim(), protocol: $('#upstreamProtocol').value,
     authType: $('#upstreamAuthType').value, apiKey: $('#upstreamApiKey').value, models: $('#upstreamModels').value,
+    balanceEndpoint: $('#upstreamBalanceEndpoint').value.trim(),
     enabled: $('#upstreamEnabled').checked
   };
 }
@@ -517,6 +582,24 @@ async function handleListClick(event) {
   if (button.dataset.action === 'edit-key') fillKeyEditForm(item);
   if (button.dataset.action === 'toggle-key') await toggleKey(item);
   if (button.dataset.action === 'copy-key') await copyLocalKey(item);
+  if (button.dataset.action === 'query-upstream-balance') {
+    button.disabled = true;
+    button.textContent = '查询中…';
+    try {
+      const result = await api(`/api/admin/upstreams/${encodeURIComponent(button.dataset.id)}/balance`, { method: 'POST', body: '{}' });
+      setBalanceResult(result);
+      render();
+      if (result.state === 'ok') toast(`${item?.name || '上游'} 余额查询成功`);
+      else toast(`${item?.name || '上游'}：${result.message || '未能查询余额'}`, result.state === 'unsupported' ? '' : 'error');
+    } catch (error) {
+      toast(`${item?.name || '上游'} 余额查询失败：${error.message}`, 'error');
+    } finally {
+      if (button.isConnected) {
+        button.disabled = false;
+        button.textContent = '查询余额';
+      }
+    }
+  }
   if (button.dataset.action === 'reset-health') {
     button.disabled = true;
     try {
@@ -639,6 +722,7 @@ $('#addRouteButton').addEventListener('click', () => {
 });
 $('#addKeyButton').addEventListener('click', () => openDialog($('#keyDialog')));
 $('#fetchUpstreamModelsButton').addEventListener('click', fetchUpstreamModels);
+$('#queryAllBalancesButton').addEventListener('click', queryAllBalances);
 document.querySelectorAll('[data-dialog-close]').forEach((button) => {
   button.addEventListener('click', () => closeDialog(document.getElementById(button.dataset.dialogClose)));
 });

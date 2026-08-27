@@ -49,6 +49,7 @@ function waitForOutput(process, text) {
 
 async function main() {
   const observedRequestIds = [];
+  const observedBalanceAuth = [];
   let slowStartedResolve;
   const slowStarted = new Promise((resolve) => { slowStartedResolve = resolve; });
   const primary = http.createServer(async (req, res) => {
@@ -57,6 +58,15 @@ async function main() {
     for await (const chunk of req) raw += chunk;
     let body = {};
     try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
+    if (req.url === '/api/usage/token') {
+      observedBalanceAuth.push(req.headers.authorization || '');
+      res.statusCode = req.headers.authorization === 'Bearer upstream-balance-secret' ? 200 : 401;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(res.statusCode === 200
+        ? { code: true, data: { object: 'token_usage', total_granted: 1000000, total_used: 250000, total_available: 750000, unlimited_quota: false, expires_at: 1893456000 } }
+        : { error: { message: 'invalid upstream key' } }));
+      return;
+    }
     if (req.url === '/v1/chat/completions' && ['rr-upstream', 'weighted-upstream'].includes(body.model)) {
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
@@ -74,6 +84,11 @@ async function main() {
     let raw = '';
     for await (const chunk of req) raw += chunk;
     res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/api/usage/token' || req.url === '/api/v1/user/platform-quotas') {
+      res.statusCode = 401;
+      res.end(JSON.stringify({ error: { message: `invalid credential: ${req.headers.authorization || ''}` } }));
+      return;
+    }
     if (req.url === '/v1/chat/completions') {
       const body = JSON.parse(raw);
       if (raw.includes('slow-concurrency-test')) {
@@ -103,11 +118,17 @@ async function main() {
     const visibleConfig = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/config`, { headers: adminHeaders });
     assert.equal(visibleConfig.status, 200, JSON.stringify(visibleConfig.body));
     assert.equal(visibleConfig.body.localApiKeys[0].key, config.localApiKeys[0].key, '管理后台应返回完整本地调用 Key');
-    const add = (name, port) => requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
-      method: 'POST', headers: adminHeaders, body: JSON.stringify({ name, baseUrl: `http://127.0.0.1:${port}/v1`, protocol: 'openai', authType: 'none', apiKey: '', models: 'test-model' })
+    const add = (name, port, authType = 'none', apiKey = '') => requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
+      method: 'POST', headers: adminHeaders, body: JSON.stringify({ name, baseUrl: `http://127.0.0.1:${port}/v1`, protocol: 'openai', authType, apiKey, models: 'test-model' })
     });
-    const primaryResult = await add('primary', primaryPort);
-    const fallbackResult = await add('fallback', fallbackPort);
+    const invalidBalanceEndpoint = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ name: 'invalid-balance-endpoint', baseUrl: `http://127.0.0.1:${primaryPort}/v1`, protocol: 'openai', authType: 'none', apiKey: '', models: 'test-model', balanceEndpoint: 'https://evil.example/balance' })
+    });
+    assert.equal(invalidBalanceEndpoint.status, 400, JSON.stringify(invalidBalanceEndpoint.body));
+    const primaryResult = await add('primary', primaryPort, 'bearer', 'upstream-balance-secret');
+    const fallbackResult = await add('fallback', fallbackPort, 'bearer', 'fallback-balance-secret');
     const initialSettings = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, { headers: adminHeaders });
     assert.equal(initialSettings.status, 200, JSON.stringify(initialSettings.body));
     assert.equal(initialSettings.body.maxFallbackAttempts, 0);
@@ -120,6 +141,32 @@ async function main() {
     assert.equal(updatedSettings.body.circuitBreakerFailureThreshold, 1);
     assert.equal(primaryResult.status, 201, output);
     assert.equal(fallbackResult.status, 201, output);
+    assert.equal(primaryResult.body.apiKey.includes('upstream-balance-secret'), false, '管理接口不得返回完整上游 Key');
+    const initialBalances = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstream-balances`, { headers: adminHeaders });
+    assert.equal(initialBalances.status, 200, JSON.stringify(initialBalances.body));
+    assert.equal(initialBalances.body.items.find((item) => item.upstreamId === primaryResult.body.id).state, 'idle');
+    const primaryBalance = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams/${encodeURIComponent(primaryResult.body.id)}/balance`, {
+      method: 'POST', headers: adminHeaders, body: '{}'
+    });
+    assert.equal(primaryBalance.status, 200, JSON.stringify(primaryBalance.body));
+    assert.equal(primaryBalance.body.state, 'ok');
+    assert.equal(primaryBalance.body.endpoint, '/api/usage/token');
+    assert.equal(primaryBalance.body.balance.type, 'quota');
+    assert.equal(primaryBalance.body.balance.remaining, 750000);
+    assert.equal(primaryBalance.body.balance.used, 250000);
+    assert.equal(JSON.stringify(primaryBalance.body).includes('upstream-balance-secret'), false);
+    assert.deepEqual(observedBalanceAuth, ['Bearer upstream-balance-secret']);
+    const cachedBalances = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstream-balances`, { headers: adminHeaders });
+    assert.equal(cachedBalances.body.items.find((item) => item.upstreamId === primaryResult.body.id).balance.granted, 1000000);
+    const allBalances = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstream-balances/query`, {
+      method: 'POST', headers: adminHeaders, body: '{}'
+    });
+    assert.equal(allBalances.status, 200, JSON.stringify(allBalances.body));
+    assert.equal(allBalances.body.items.find((item) => item.upstreamId === primaryResult.body.id).state, 'ok');
+    const failedBalance = allBalances.body.items.find((item) => item.upstreamId === fallbackResult.body.id);
+    assert.equal(failedBalance.state, 'error');
+    assert.match(failedBalance.message, /\[已隐藏\]/);
+    assert.equal(JSON.stringify(failedBalance).includes('fallback-balance-secret'), false);
     const sync = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams/${encodeURIComponent(primaryResult.body.id)}/sync-models`, {
       method: 'POST', headers: adminHeaders, body: '{}'
     });

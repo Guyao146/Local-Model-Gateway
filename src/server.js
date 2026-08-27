@@ -26,12 +26,14 @@ const {
 const { recordRequest, getMetrics, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
 const { createAdminAuth } = require('./admin-auth');
+const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
 
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const MAX_BODY_SIZE = 25 * 1024 * 1024;
 const config = loadConfig();
 const upstreamHealth = new Map();
+const upstreamBalances = new Map();
 const requestRateWindows = new Map();
 let activeModelRequests = 0;
 
@@ -278,6 +280,21 @@ function publicUpstreamHealth() {
       lastError: health.lastError
     };
   });
+}
+
+function publicUpstreamBalances() {
+  return {
+    items: config.upstreams.map((upstream) => upstreamBalances.get(upstream.id) || {
+      upstreamId: upstream.id,
+      name: upstream.name,
+      state: 'idle',
+      checkedAt: null,
+      endpoint: null,
+      httpStatus: null,
+      balance: null,
+      message: null
+    })
+  };
 }
 
 function requireAdmin(req, res) {
@@ -648,6 +665,9 @@ function upstreamFromBody(body, existing = {}) {
     : (protocol === 'anthropic' ? 'x-api-key' : 'bearer');
   const apiKey = body.apiKey && !body.apiKey.includes('••••') ? String(body.apiKey) : existing.apiKey;
   if (!apiKey && authType !== 'none') throw new Error('上游 API Key 不能为空');
+  const balanceEndpoint = normalizeBalanceEndpoint(
+    body.balanceEndpoint !== undefined ? body.balanceEndpoint : existing.balanceEndpoint
+  );
   const catalogInput = body.modelCatalog !== undefined
     ? body.modelCatalog
     : existing.modelCatalog !== undefined
@@ -662,6 +682,7 @@ function upstreamFromBody(body, existing = {}) {
     authType,
     models: normalizeModels(body.models),
     modelCatalog: normalizeModelCatalog(catalogInput, existing.modelCatalog, protocol),
+    ...(balanceEndpoint ? { balanceEndpoint } : {}),
     enabled: body.enabled !== false,
     createdAt: existing.createdAt || nowIso(),
     updatedAt: nowIso(),
@@ -1371,6 +1392,102 @@ async function testUpstream(upstream) {
   return { ok: response.ok, status: response.status, protocol: upstream.protocol, endpoint, body };
 }
 
+function upstreamOriginEndpoint(upstream, endpointPath) {
+  const origin = new URL(upstream.baseUrl).origin;
+  return new URL(endpointPath, `${origin}/`).toString();
+}
+
+function safeUpstreamBalanceMessage(upstream, value) {
+  let message = String(value || '余额查询失败');
+  if (upstream.apiKey) {
+    message = message.split(upstream.apiKey).join('[已隐藏]');
+    try {
+      message = message.split(encodeURIComponent(upstream.apiKey)).join('[已隐藏]');
+    } catch {
+      // The original secret replacement above is still sufficient for normal keys.
+    }
+  }
+  return message.slice(0, 300);
+}
+
+function setUpstreamBalance(upstream, values) {
+  const result = {
+    upstreamId: upstream.id,
+    name: upstream.name,
+    state: values.state,
+    checkedAt: nowIso(),
+    endpoint: values.endpoint || null,
+    httpStatus: Number.isInteger(values.httpStatus) ? values.httpStatus : null,
+    balance: values.balance || null,
+    message: values.message ? safeUpstreamBalanceMessage(upstream, values.message) : null
+  };
+  upstreamBalances.set(upstream.id, result);
+  return result;
+}
+
+async function queryUpstreamBalance(upstream) {
+  const candidates = upstream.balanceEndpoint
+    ? [upstream.balanceEndpoint]
+    : ['/api/usage/token', '/api/v1/user/platform-quotas'];
+  const failures = [];
+
+  for (const endpointPath of candidates) {
+    const endpoint = upstreamOriginEndpoint(upstream, endpointPath);
+    try {
+      const response = await fetchWithTimeout(endpoint, { method: 'GET', headers: upstreamHeaders(upstream) }, 15000);
+      const body = await readResponseJson(response);
+      if (response.ok) {
+        const balance = parseUpstreamBalance(body);
+        if (balance) {
+          return setUpstreamBalance(upstream, {
+            state: 'ok',
+            endpoint: endpointPath,
+            httpStatus: response.status,
+            balance
+          });
+        }
+        failures.push({ endpoint: endpointPath, status: response.status, message: '响应中没有可识别的余额或额度字段' });
+      } else {
+        failures.push({
+          endpoint: endpointPath,
+          status: response.status,
+          message: errorMessage(body, `上游返回 HTTP ${response.status}`)
+        });
+      }
+    } catch (error) {
+      failures.push({ endpoint: endpointPath, status: null, message: error.name === 'AbortError' ? '余额查询超时' : error.message });
+    }
+  }
+
+  const last = failures[failures.length - 1] || { endpoint: candidates[0], status: null, message: '没有可用的余额接口' };
+  const unsupported = failures.length > 0 && failures.every((item) => [404, 405].includes(item.status) || item.status === 200);
+  const automaticHint = !upstream.balanceEndpoint && !unsupported
+    ? '；模型 API Key 可能无权访问账户额度，可在上游设置中填写站点提供的余额接口路径'
+    : '';
+  return setUpstreamBalance(upstream, {
+    state: unsupported ? 'unsupported' : 'error',
+    endpoint: last.endpoint,
+    httpStatus: last.status,
+    message: `${last.message}${automaticHint}`
+  });
+}
+
+async function queryAllUpstreamBalances() {
+  const upstreams = [...config.upstreams];
+  const results = new Array(upstreams.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(4, upstreams.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < upstreams.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await queryUpstreamBalance(upstreams[index]);
+    }
+  });
+  await Promise.all(workers);
+  return { items: results };
+}
+
 async function fetchUpstreamModelCatalog(upstream) {
   const endpoint = resolveEndpoint(upstream.baseUrl, '/v1/models');
   const response = await fetchWithTimeout(endpoint, { method: 'GET', headers: upstreamHeaders(upstream) });
@@ -1514,6 +1631,7 @@ function importConfig(rawConfig, preserveCredentials = true) {
   config.modelSelections = importedSelections;
   config.modelSelectionMode = source.modelSelectionMode === true || importedSelections.length > 0;
   config.settings = importedSettings;
+  upstreamBalances.clear();
   saveConfig(config);
   return publicConfig(config);
 }
@@ -1601,7 +1719,13 @@ async function handleAdmin(req, res, pathname) {
   }
   if (req.method === 'POST' && pathname === '/api/admin/upstreams') {
     const body = await readBody(req);
-    const upstream = upstreamFromBody(body);
+    let upstream;
+    try {
+      upstream = upstreamFromBody(body);
+    } catch (error) {
+      sendJson(res, 400, { error: { message: error.message } });
+      return;
+    }
     config.upstreams.push(upstream);
     saveConfig(config);
     sendJson(res, 201, { ...upstream, apiKey: maskSecret(upstream.apiKey) });
@@ -1613,8 +1737,15 @@ async function handleAdmin(req, res, pathname) {
     const index = config.upstreams.findIndex((item) => item.id === id);
     if (index < 0) return sendJson(res, 404, { error: { message: '上游不存在' } });
     const body = await readBody(req);
-    const upstream = upstreamFromBody(body, config.upstreams[index]);
+    let upstream;
+    try {
+      upstream = upstreamFromBody(body, config.upstreams[index]);
+    } catch (error) {
+      sendJson(res, 400, { error: { message: error.message } });
+      return;
+    }
     config.upstreams[index] = upstream;
+    upstreamBalances.delete(id);
     resetRoutingState();
     saveConfig(config);
     sendJson(res, 200, { ...upstream, apiKey: maskSecret(upstream.apiKey) });
@@ -1624,6 +1755,7 @@ async function handleAdmin(req, res, pathname) {
     const id = decodeURIComponent(upstreamMatch[1]);
     config.upstreams = config.upstreams.filter((item) => item.id !== id);
     upstreamHealth.delete(id);
+    upstreamBalances.delete(id);
     config.routes = config.routes
       .filter((item) => item.upstreamId !== id)
       .map((item) => ({
@@ -1657,6 +1789,13 @@ async function handleAdmin(req, res, pathname) {
     } catch (error) {
       sendJson(res, error.statusCode || 502, { ok: false, error: { message: error.message } });
     }
+    return;
+  }
+  const balanceMatch = pathname.match(/^\/api\/admin\/upstreams\/([^/]+)\/balance$/);
+  if (balanceMatch && req.method === 'POST') {
+    const upstream = config.upstreams.find((item) => item.id === decodeURIComponent(balanceMatch[1]));
+    if (!upstream) return sendJson(res, 404, { error: { message: '上游不存在' } });
+    sendJson(res, 200, await queryUpstreamBalance(upstream));
     return;
   }
   if (req.method === 'POST' && pathname === '/api/admin/routes') {
@@ -1729,6 +1868,14 @@ async function handleAdmin(req, res, pathname) {
   }
   if (req.method === 'GET' && pathname === '/api/admin/upstream-status') {
     sendJson(res, 200, { settings: normalizeSettings(config.settings), items: publicUpstreamHealth() });
+    return;
+  }
+  if (req.method === 'GET' && pathname === '/api/admin/upstream-balances') {
+    sendJson(res, 200, publicUpstreamBalances());
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/admin/upstream-balances/query') {
+    sendJson(res, 200, await queryAllUpstreamBalances());
     return;
   }
   const resetHealthMatch = pathname.match(/^\/api\/admin\/upstreams\/([^/]+)\/reset-health$/);

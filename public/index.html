@@ -39,9 +39,9 @@
       <section class="panel">
         <div class="panel-heading">
           <div><span class="section-number">02</span><h2>上游站点</h2></div>
-          <button id="addUpstreamButton" class="button primary">＋ 添加上游</button>
+          <div class="panel-actions"><button id="queryAllBalancesButton" class="button secondary">查询全部余额</button><button id="addUpstreamButton" class="button primary">＋ 添加上游</button></div>
         </div>
-        <p class="help">OpenAI 兼容协议适用于 sub2api / newapi 常见接口；Anthropic 协议会使用 <code>/v1/messages</code>。可测试连接，并查看上游熔断状态。</p>
+        <p class="help">OpenAI 兼容协议适用于 sub2api / newapi 常见接口；Anthropic 协议会使用 <code>/v1/messages</code>。可测试连接、查询余额，并查看上游熔断状态。余额查询不会影响熔断状态。</p>
         <div id="upstreamList" class="card-list"></div>
       </section>
 
@@ -137,6 +137,8 @@
         <label>鉴权方式<select id="upstreamAuthType"><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option><option value="none">不添加鉴权</option></select></label>
       </div>
       <label>API Key<input id="upstreamApiKey" type="password" autocomplete="off" placeholder="新增时必填；编辑时留空表示保留原 Key"></label>
+      <label>余额接口路径 <span class="muted">（可选）</span><input id="upstreamBalanceEndpoint" placeholder="留空自动探测；例如：/api/usage/token"></label>
+      <div class="help">仅允许当前上游同源的相对路径。NewAPI 通常可留空自动使用 <code>/api/usage/token</code>；部分站点的账户余额接口需要面板凭据，模型 API Key 可能无权查询。</div>
       <label>上游模型列表 <span class="muted">（可选，每行一个）</span><textarea id="upstreamModels" rows="4" placeholder="填写地址和 API Key 后点击下方“拉取模型”"></textarea></label>
       <div class="model-fetch-row"><span id="upstreamModelFetchMessage" class="muted">从上游的 /v1/models 自动获取</span><button id="fetchUpstreamModelsButton" type="button" class="button secondary">拉取模型</button></div>
       <label class="check-label"><input id="upstreamEnabled" type="checkbox" checked> 启用这个上游</label>

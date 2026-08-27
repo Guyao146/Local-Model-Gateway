@@ -53,5 +53,8 @@ for (const action of ['toggle-provider', 'toggle-prefix', 'select-provider', 'cl
 }
 assert.ok(appSource.includes('aria-expanded="${state.expandedProviders.has(provider.id)}"'));
 assert.ok(appSource.includes('aria-expanded="${state.expandedPrefixes.has(prefixKey)}"'));
+assert.equal(appSource.includes('⌄'), false, '折叠箭头不应再使用文字字符');
+assert.ok(appSource.includes('class="provider-arrow" aria-hidden="true"'));
+assert.ok(appSource.includes('class="prefix-arrow" aria-hidden="true"'));
 
 console.log('model group tests passed');
