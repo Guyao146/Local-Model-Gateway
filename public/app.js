@@ -70,6 +70,16 @@ function healthLabel(item) {
   return '健康';
 }
 
+function clientIdentityLabel(item) {
+  return {
+    default: '默认客户端',
+    claude_code: 'Claude Code',
+    codex_cli: 'Codex CLI',
+    cherry_studio: 'Cherry Studio',
+    custom: item?.customUserAgent || '自定义客户端'
+  }[item?.clientIdentityPreset || 'default'] || '默认客户端';
+}
+
 function formatBalanceNumber(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '-';
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: 6 });
@@ -235,7 +245,7 @@ function render() {
   $('#upstreamList').innerHTML = upstreams.length ? upstreams.map((item) => `
     <article class="item-card">
       <div><div class="item-title">${escapeHtml(item.name)}</div>
-        <div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">${item.protocol === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容'}</span><span class="tag ${healthById.get(item.id)?.state === 'open' ? 'off' : 'active'}">${healthLabel(healthById.get(item.id))}</span><span>${escapeHtml(item.baseUrl)}</span></div>
+        <div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">${item.protocol === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容'}</span><span class="tag">${escapeHtml(clientIdentityLabel(item))}</span><span class="tag ${healthById.get(item.id)?.state === 'open' ? 'off' : 'active'}">${healthLabel(healthById.get(item.id))}</span><span>${escapeHtml(item.baseUrl)}</span></div>
         <div class="item-meta"><span>Key：${escapeHtml(item.apiKey)}</span><span>模型：${escapeHtml((item.models || []).join(', ') || '未填写（依赖路由）')}</span>${item.modelsSyncedAt ? `<span>同步于：${escapeHtml(formatTime(item.modelsSyncedAt))}</span>` : ''}${healthById.get(item.id)?.consecutiveFailures ? `<span>连续失败：${escapeHtml(healthById.get(item.id).consecutiveFailures)} 次</span>` : ''}${healthById.get(item.id)?.openUntil ? `<span>冷却至：${escapeHtml(formatTime(healthById.get(item.id).openUntil))}</span>` : ''}</div>
         <div class="item-meta balance-meta">${balanceDetails(balanceById.get(item.id))}</div>
       </div><div class="item-actions"><button class="text-button" data-action="query-upstream-balance" data-id="${escapeHtml(item.id)}">查询余额</button><button class="text-button" data-action="test-upstream" data-id="${escapeHtml(item.id)}">测试连接</button><button class="text-button" data-action="reset-health" data-id="${escapeHtml(item.id)}">重置状态</button><button class="text-button" data-action="sync-upstream" data-id="${escapeHtml(item.id)}">同步模型</button><button class="text-button" data-action="edit-upstream" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button delete" data-action="delete-upstream" data-id="${escapeHtml(item.id)}">删除</button></div>
@@ -454,6 +464,12 @@ function batchSelectModels(prefix, selected) {
   toast(`${prefix} 已${selected ? '全部勾选' : '全部取消'}`);
 }
 
+function updateClientIdentityFields() {
+  const custom = $('#upstreamClientIdentityPreset').value === 'custom';
+  $('#customUserAgentLabel').classList.toggle('hidden', !custom);
+  $('#upstreamCustomUserAgent').required = custom;
+}
+
 function fillUpstreamForm(item = null) {
   $('#upstreamDialogTitle').textContent = item ? '编辑上游' : '添加上游';
   $('#upstreamId').value = item?.id || '';
@@ -463,6 +479,9 @@ function fillUpstreamForm(item = null) {
   $('#upstreamAuthType').value = item?.authType || (item?.protocol === 'anthropic' ? 'x-api-key' : 'bearer');
   $('#upstreamApiKey').value = '';
   $('#upstreamApiKey').placeholder = item ? '留空表示保留原 Key' : '输入上游 API Key';
+  $('#upstreamClientIdentityPreset').value = item?.clientIdentityPreset || 'default';
+  $('#upstreamCustomUserAgent').value = item?.customUserAgent || '';
+  updateClientIdentityFields();
   $('#upstreamBalanceEndpoint').value = item?.balanceEndpoint || '';
   $('#upstreamModels').value = (item?.models || []).join('\n');
   $('#upstreamModelFetchMessage').textContent = '从上游的 /v1/models 自动获取';
@@ -498,6 +517,8 @@ function upstreamPayloadFromForm() {
   return {
     name: $('#upstreamName').value.trim(), baseUrl: $('#upstreamBaseUrl').value.trim(), protocol: $('#upstreamProtocol').value,
     authType: $('#upstreamAuthType').value, apiKey: $('#upstreamApiKey').value, models: $('#upstreamModels').value,
+    clientIdentityPreset: $('#upstreamClientIdentityPreset').value,
+    customUserAgent: $('#upstreamClientIdentityPreset').value === 'custom' ? $('#upstreamCustomUserAgent').value.trim() : '',
     balanceEndpoint: $('#upstreamBalanceEndpoint').value.trim(),
     enabled: $('#upstreamEnabled').checked
   };
@@ -752,6 +773,7 @@ $('#addRouteButton').addEventListener('click', () => {
 $('#addKeyButton').addEventListener('click', () => openDialog($('#keyDialog')));
 $('#fetchUpstreamModelsButton').addEventListener('click', fetchUpstreamModels);
 $('#queryAllBalancesButton').addEventListener('click', queryAllBalances);
+$('#upstreamClientIdentityPreset').addEventListener('change', updateClientIdentityFields);
 document.querySelectorAll('[data-dialog-close]').forEach((button) => {
   button.addEventListener('click', () => closeDialog(document.getElementById(button.dataset.dialogClose)));
 });

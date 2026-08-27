@@ -137,6 +137,11 @@
         <label>鉴权方式<select id="upstreamAuthType"><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option><option value="none">不添加鉴权</option></select></label>
       </div>
       <label>API Key<input id="upstreamApiKey" type="password" autocomplete="off" placeholder="新增时必填；编辑时留空表示保留原 Key"></label>
+      <div class="two-columns">
+        <label>客户端兼容标识<select id="upstreamClientIdentityPreset"><option value="default">默认（Node.js fetch）</option><option value="claude_code">Claude Code</option><option value="codex_cli">OpenAI Codex CLI</option><option value="cherry_studio">Cherry Studio</option><option value="custom">自定义 User-Agent</option></select></label>
+        <label id="customUserAgentLabel" class="hidden">自定义 User-Agent<input id="upstreamCustomUserAgent" maxlength="300" placeholder="例如：MyClient/1.0"></label>
+      </div>
+      <div class="help">仅设置客户端兼容标识，不修改鉴权。Codex 预设还会发送 <code>originator: codex_cli_rs</code>；不会伪造动态版本、会话、设备证明或账号签名。</div>
       <label>余额接口路径 <span class="muted">（可选）</span><input id="upstreamBalanceEndpoint" placeholder="留空自动探测；例如：/api/usage/token"></label>
       <div class="help">仅允许当前上游同源的相对路径。NewAPI 通常可留空自动使用 <code>/api/usage/token</code>；部分站点的账户余额接口需要面板凭据，模型 API Key 可能无权查询。</div>
       <label>上游模型列表 <span class="muted">（可选，每行一个）</span><textarea id="upstreamModels" rows="4" placeholder="填写地址和 API Key 后点击下方“拉取模型”"></textarea></label>

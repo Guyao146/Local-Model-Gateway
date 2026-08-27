@@ -27,6 +27,7 @@ const { recordRequest, getMetrics, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
 const { createAdminAuth } = require('./admin-auth');
 const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
+const { clientIdentityHeaders, normalizeClientIdentity } = require('./client-identity');
 
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -691,6 +692,10 @@ function upstreamFromBody(body, existing = {}) {
   const balanceEndpoint = normalizeBalanceEndpoint(
     body.balanceEndpoint !== undefined ? body.balanceEndpoint : existing.balanceEndpoint
   );
+  const clientIdentity = normalizeClientIdentity(
+    body.clientIdentityPreset !== undefined ? body.clientIdentityPreset : existing.clientIdentityPreset,
+    body.customUserAgent !== undefined ? body.customUserAgent : existing.customUserAgent
+  );
   const catalogInput = body.modelCatalog !== undefined
     ? body.modelCatalog
     : existing.modelCatalog !== undefined
@@ -706,6 +711,8 @@ function upstreamFromBody(body, existing = {}) {
     models: normalizeModels(body.models),
     modelCatalog: normalizeModelCatalog(catalogInput, existing.modelCatalog, protocol),
     ...(balanceEndpoint ? { balanceEndpoint } : {}),
+    clientIdentityPreset: clientIdentity.preset,
+    ...(clientIdentity.preset === 'custom' ? { customUserAgent: clientIdentity.userAgent } : {}),
     enabled: body.enabled !== false,
     createdAt: existing.createdAt || nowIso(),
     updatedAt: nowIso(),
@@ -815,7 +822,8 @@ function chooseRoute(model) {
 function upstreamHeaders(upstream, requestId) {
   const headers = {
     Accept: 'application/json, text/event-stream',
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json',
+    ...clientIdentityHeaders(upstream)
   };
   if (upstream.authType === 'x-api-key') headers['x-api-key'] = upstream.apiKey;
   if (upstream.authType === 'bearer') headers.Authorization = `Bearer ${upstream.apiKey}`;

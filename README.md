@@ -127,10 +127,23 @@ location / {
 - 协议：`OpenAI 兼容`
 - 鉴权：`Bearer`
 - API Key：该站点的 Key
+- 客户端兼容标识：默认不覆盖；遇到站点按客户端区分兼容性时可选择预设或自定义 `User-Agent`
 - 余额接口路径：通常留空自动探测；私有站点可填写同源相对路径
 - 模型列表：填写地址和 API Key 后可点击“拉取模型”自动获取，也可以每行手工填写一个
 
 如果站点明确要求 `x-api-key`，把鉴权方式改为 `x-api-key`。
+
+### 客户端兼容标识
+
+每个上游可以独立选择客户端兼容标识，应用于模型调用、连接测试、模型拉取和余额查询：
+
+- 默认：不主动覆盖 `User-Agent`，由 Node.js `fetch` 使用自身默认值
+- Claude Code：发送 `User-Agent: claude-code`
+- OpenAI Codex CLI：发送稳定标识 `User-Agent: codex_cli_rs` 和 `originator: codex_cli_rs`；官方完整 UA 还会动态包含版本、系统、架构和终端信息，需要精确值时请使用自定义模式
+- Cherry Studio：发送 `User-Agent: CherryStudio`
+- 自定义：发送用户填写的 `User-Agent`
+
+该功能只用于兼容需要识别客户端类型的上游，不会修改 `Authorization`、`x-api-key` 或 `Host`，也不会伪造动态会话头、设备证明、账号签名或 attestation。自定义值最长 300 个字符并拒绝 CR/LF、Tab 等控制字符，避免请求头注入。请仅在上游服务条款允许的情况下使用；它不能替代站点授权，也不保证绕过服务端的完整客户端校验。
 
 ### 查询上游余额
 

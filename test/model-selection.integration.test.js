@@ -54,7 +54,7 @@ function jsonResponse(res, status, body) {
 }
 
 async function main() {
-  const observed = { openai: [], anthropic: [], modelHeaders: [] };
+  const observed = { openai: [], anthropic: [], modelHeaders: [], anthropicModelHeaders: [], openaiRequestHeaders: [], anthropicRequestHeaders: [] };
   const openai = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -73,6 +73,7 @@ async function main() {
     if (req.url === '/v1/chat/completions') {
       const body = JSON.parse(raw);
       observed.openai.push(body);
+      observed.openaiRequestHeaders.push(req.headers);
       jsonResponse(res, 200, {
         id: 'selection-openai',
         model: body.model,
@@ -87,6 +88,7 @@ async function main() {
     let raw = '';
     for await (const chunk of req) raw += chunk;
     if (req.url === '/v1/models') {
+      observed.anthropicModelHeaders.push(req.headers);
       jsonResponse(res, 200, {
         data: [
           { id: 'claude-3-7-sonnet', capabilities: { thinking: true, thinking_levels: ['low', 'medium', 'high'] } },
@@ -98,6 +100,7 @@ async function main() {
     if (req.url === '/v1/messages') {
       const body = JSON.parse(raw);
       observed.anthropic.push(body);
+      observed.anthropicRequestHeaders.push(req.headers);
       jsonResponse(res, 200, {
         id: 'selection-anthropic',
         type: 'message',
@@ -130,26 +133,43 @@ async function main() {
     const preview = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/model-catalog/preview`, {
       method: 'POST',
       headers: adminHeaders,
-      body: JSON.stringify({ baseUrl: `http://127.0.0.1:${openaiPort}/v1`, protocol: 'openai', authType: 'bearer', apiKey: 'preview-secret' })
+      body: JSON.stringify({ baseUrl: `http://127.0.0.1:${openaiPort}/v1`, protocol: 'openai', authType: 'bearer', apiKey: 'preview-secret', clientIdentityPreset: 'cherry_studio' })
     });
     assert.equal(preview.status, 200, JSON.stringify(preview.body));
     assert.equal(preview.body.count, 3);
     assert.deepEqual(preview.body.models, ['gpt-plain', 'o3-mini', 'shared-model']);
     assert.equal(observed.modelHeaders.at(-1).authorization, 'Bearer preview-secret');
+    assert.equal(observed.modelHeaders.at(-1)['user-agent'], 'CherryStudio');
     const configAfterPreview = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/config`, { headers: adminHeaders });
     assert.equal(configAfterPreview.body.upstreams.length, 0, '预览拉取不应提前保存上游');
 
-    const addUpstream = (name, port, protocol, models, authType = 'none', apiKey = '') => requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
+    const invalidUserAgent = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
       method: 'POST',
       headers: adminHeaders,
-      body: JSON.stringify({ name, baseUrl: `http://127.0.0.1:${port}/v1`, protocol, authType, apiKey, models })
+      body: JSON.stringify({ name: 'invalid-user-agent', baseUrl: `http://127.0.0.1:${openaiPort}/v1`, protocol: 'openai', authType: 'none', apiKey: '', models: 'shared-model', clientIdentityPreset: 'custom', customUserAgent: 'safe\r\ninjected: value' })
     });
-    const openaiUpstream = await addUpstream('OpenAI Model Catalog', openaiPort, 'openai', 'o3-mini,gpt-plain,shared-model', 'bearer', 'saved-secret');
-    const anthropicUpstream = await addUpstream('Anthropic Model Catalog', anthropicPort, 'anthropic', 'claude-3-7-sonnet,shared-model');
+    assert.equal(invalidUserAgent.status, 400, JSON.stringify(invalidUserAgent.body));
+
+    const addUpstream = (name, port, protocol, models, authType = 'none', apiKey = '', identity = {}) => requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ name, baseUrl: `http://127.0.0.1:${port}/v1`, protocol, authType, apiKey, models, ...identity })
+    });
+    const openaiUpstream = await addUpstream('OpenAI Model Catalog', openaiPort, 'openai', 'o3-mini,gpt-plain,shared-model', 'bearer', 'saved-secret', { clientIdentityPreset: 'codex_cli' });
+    const anthropicUpstream = await addUpstream('Anthropic Model Catalog', anthropicPort, 'anthropic', 'claude-3-7-sonnet,shared-model', 'none', '', { clientIdentityPreset: 'custom', customUserAgent: 'My-Anthropic-Client/1.0' });
     assert.equal(openaiUpstream.status, 201, output);
     assert.equal(anthropicUpstream.status, 201, output);
     assert.notEqual(openaiUpstream.body.apiKey, 'saved-secret', '上游 API Key 仍应保持脱敏');
     assert.match(openaiUpstream.body.apiKey, /••••/);
+    assert.equal(openaiUpstream.body.clientIdentityPreset, 'codex_cli');
+    assert.equal(anthropicUpstream.body.clientIdentityPreset, 'custom');
+    assert.equal(anthropicUpstream.body.customUserAgent, 'My-Anthropic-Client/1.0');
+
+    const anthropicTest = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams/${encodeURIComponent(anthropicUpstream.body.id)}/test`, {
+      method: 'POST', headers: adminHeaders, body: '{}'
+    });
+    assert.equal(anthropicTest.status, 200, JSON.stringify(anthropicTest.body));
+    assert.equal(observed.anthropicRequestHeaders.at(-1)['user-agent'], 'My-Anthropic-Client/1.0');
 
     const existingPreview = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/model-catalog/preview`, {
       method: 'POST',
@@ -158,6 +178,8 @@ async function main() {
     });
     assert.equal(existingPreview.status, 200, JSON.stringify(existingPreview.body));
     assert.equal(observed.modelHeaders.at(-1).authorization, 'Bearer saved-secret');
+    assert.equal(observed.modelHeaders.at(-1)['user-agent'], 'codex_cli_rs');
+    assert.equal(observed.modelHeaders.at(-1).originator, 'codex_cli_rs');
 
     const sync = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/model-catalog/sync`, {
       method: 'POST', headers: adminHeaders, body: '{}'
@@ -168,6 +190,7 @@ async function main() {
     assert.equal(openaiCatalog.models.find((item) => item.id === 'o3-mini').supportsThinking, true);
     assert.equal(openaiCatalog.models.find((item) => item.id === 'gpt-plain').supportsThinking, false);
     assert.equal(anthropicCatalog.models.find((item) => item.id === 'claude-3-7-sonnet').supportsThinking, true);
+    assert.equal(observed.anthropicModelHeaders.at(-1)['user-agent'], 'My-Anthropic-Client/1.0');
 
     const selections = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/model-selections`, {
       method: 'PUT',
@@ -196,6 +219,9 @@ async function main() {
     assert.equal(openaiRequest.body.choices[0].message.content, 'openai-thinking:high');
     assert.equal(observed.openai.at(-1).reasoning_effort, 'high');
     assert.equal(observed.openai.at(-1).thinkingLevel, undefined);
+    assert.equal(observed.openaiRequestHeaders.at(-1)['user-agent'], 'codex_cli_rs');
+    assert.equal(observed.openaiRequestHeaders.at(-1).originator, 'codex_cli_rs');
+    assert.equal(observed.openaiRequestHeaders.at(-1).authorization, 'Bearer saved-secret');
 
     const explicitOverride = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
       method: 'POST', headers: localHeaders, body: JSON.stringify({ model: 'my-o3', reasoning_effort: 'low', messages: [{ role: 'user', content: 'hello' }] })
@@ -211,6 +237,7 @@ async function main() {
     assert.equal(observed.anthropic.at(-1).thinking.type, 'enabled');
     assert.equal(observed.anthropic.at(-1).thinking.budget_tokens, 4096);
     assert.ok(observed.anthropic.at(-1).max_tokens >= 5120);
+    assert.equal(observed.anthropicRequestHeaders.at(-1)['user-agent'], 'My-Anthropic-Client/1.0');
 
     const configWithAutomaticRoute = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/config`, { headers: adminHeaders });
     const automaticRoute = configWithAutomaticRoute.body.routes.find((item) => item.localModel === 'shared-local');
