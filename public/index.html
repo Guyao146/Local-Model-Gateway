@@ -100,9 +100,10 @@
         <div id="statsGrid" class="stats-grid"></div>
         <div class="subheading-row"><h3>按上游统计</h3></div>
         <div id="upstreamStats" class="upstream-stats"></div>
-        <div class="subheading-row"><h3>最近请求</h3><span class="muted">最多保留最近 200 条，仅记录元数据</span></div>
+        <div class="subheading-row"><h3>最近请求</h3><span id="requestLogSummary" class="muted">仅记录元数据</span></div>
         <div class="table-wrap"><table><thead><tr><th>时间</th><th>模型</th><th>策略</th><th>上游</th><th>状态</th><th>耗时</th><th>Token</th><th>结果</th></tr></thead><tbody id="requestLogBody"></tbody></table></div>
         <div id="metricsEmpty" class="empty hidden">还没有请求记录。</div>
+        <div id="requestLogMore" class="log-more hidden"><button id="loadMoreLogsButton" type="button" class="button secondary">加载更多</button></div>
       </section>
 
       <section class="panel endpoint-panel">

@@ -5,10 +5,12 @@ const state = {
   balances: null,
   catalog: null,
   expandedPrefixes: new Set(),
-  modelSelectionDraft: null
+  modelSelectionDraft: null,
+  logPage: null,
+  loadingMoreLogs: false
 };
 const $ = (selector) => document.querySelector(selector);
-const { groupModelsByPrefix, mergeModelsById, modelGroupKey, modelPrefix, setUnifiedModelsSelected, unifiedModelSelectionKey } = window.ModelGroups;
+const { groupModelsByPrefix, mergeModelsById, modelGroupKey, modelPrefix, pooledUpstreamIds, setUnifiedModelsSelected, unifiedModelSelectionKey } = window.ModelGroups;
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -154,7 +156,9 @@ function reconcileModelSelectionDraft(catalog, reset = false) {
     if (!model) continue;
     const providerIds = model.providers.map((provider) => provider.id);
     if (selection.upstreamMode === 'auto' && providerIds.length > 1) {
-      reconciled.set(key, { ...selection, upstreamId: providerIds[0], upstreamIds: providerIds, upstreamMode: 'auto' });
+      // Keep the saved round-robin pool; only drop stations that no longer offer the model.
+      const pooledIds = pooledUpstreamIds(selection, providerIds);
+      reconciled.set(key, { ...selection, upstreamId: pooledIds[0], upstreamIds: pooledIds, upstreamMode: 'auto' });
     } else if (providerIds.includes(selection.upstreamId)) {
       reconciled.set(key, { ...selection, upstreamIds: [selection.upstreamId], upstreamMode: 'fixed' });
     }
@@ -177,11 +181,17 @@ function syncRenderedModelDraft() {
     const upstreamSelect = row.querySelector('[data-action="model-upstream"]');
     const providerIds = [...upstreamSelect.options].map((option) => option.value).filter((value) => value !== '__auto__');
     const automatic = upstreamSelect.value === '__auto__' && providerIds.length > 1;
-    const upstreamId = automatic ? providerIds[0] : upstreamSelect.value;
+    let pooledIds = providerIds;
+    if (automatic) {
+      const checked = [...row.querySelectorAll('[data-action="pool-provider"]')].filter((box) => box.checked).map((box) => box.dataset.providerId);
+      // Keep at least two stations in the pool; fall back to all when the user unchecked too many.
+      pooledIds = checked.length >= 2 ? providerIds.filter((id) => checked.includes(id)) : providerIds;
+    }
+    const upstreamId = automatic ? pooledIds[0] : upstreamSelect.value;
     draft.set(key, {
       ...previous,
       upstreamId,
-      upstreamIds: automatic ? providerIds : [upstreamId],
+      upstreamIds: automatic ? pooledIds : [upstreamId],
       upstreamMode: automatic ? 'auto' : 'fixed',
       upstreamModel: modelId,
       localModel: row.querySelector('[data-action="model-alias"]')?.value.trim() || modelId,
@@ -211,7 +221,13 @@ function renderModelRow(model, selections) {
   const selectedProvider = selection?.upstreamMode === 'auto' && model.providers.length > 1 ? '__auto__' : (selection?.upstreamId || (model.providers.length > 1 ? '__auto__' : model.providers[0]?.id));
   const providerOptions = `${model.providers.length > 1 ? `<option value="__auto__" ${selectedProvider === '__auto__' ? 'selected' : ''}>自动选择（${model.providers.length} 个站）</option>` : ''}${model.providers.map((provider) => `<option value="${escapeHtml(provider.id)}" ${selectedProvider === provider.id ? 'selected' : ''}>${escapeHtml(provider.name)} · ${escapeHtml(provider.protocol)}${provider.enabled ? '' : '（已停用）'}</option>`).join('')}`;
   const providerNames = model.providers.map((provider) => provider.name).join('、');
-  return `<div class="model-row" data-model-key="${escapeHtml(key)}"><input type="checkbox" data-action="toggle-model" data-model-id="${escapeHtml(model.id)}" ${selection ? 'checked' : ''}><div><div class="model-name" title="${escapeHtml(model.id)}">${escapeHtml(model.id)}${model.providers.length > 1 ? `<span class="source-count-badge">${model.providers.length} 个站</span>` : ''}${model.supportsThinking === true ? '<span class="thinking-badge">支持思考</span>' : model.supportsThinking === null ? '<span class="thinking-badge thinking-unknown">能力未知</span>' : '<span class="thinking-badge thinking-disabled">不支持思考</span>'}</div><div class="model-info" title="${escapeHtml(providerNames)}">来源：${escapeHtml(providerNames)}</div></div><div class="model-controls"><select data-action="model-upstream" aria-label="${escapeHtml(model.id)} 的上游站点">${providerOptions}</select><input type="text" data-action="model-alias" value="${escapeHtml(selection?.localModel || model.id)}" placeholder="本地模型别名"><select data-action="thinking-level"><option value="auto" ${!selection || selection.thinkingLevel === 'auto' ? 'selected' : ''}>思考：自动</option><option value="off" ${selection?.thinkingLevel === 'off' ? 'selected' : ''}>思考：关闭</option><option value="low" ${selection?.thinkingLevel === 'low' ? 'selected' : ''}>思考：低</option><option value="medium" ${selection?.thinkingLevel === 'medium' ? 'selected' : ''}>思考：中</option><option value="high" ${selection?.thinkingLevel === 'high' ? 'selected' : ''}>思考：高</option></select></div></div>`;
+  const isAuto = selectedProvider === '__auto__';
+  const providerIds = model.providers.map((provider) => provider.id);
+  const pooledIds = new Set(isAuto ? pooledUpstreamIds(selection, providerIds) : []);
+  const poolMarkup = model.providers.length > 1
+    ? `<div class="model-pool${isAuto ? '' : ' hidden'}" data-role="model-pool"><span class="model-pool-label">轮询站点：</span>${model.providers.map((provider) => `<label class="model-pool-item${provider.enabled ? '' : ' disabled'}"><input type="checkbox" data-action="pool-provider" data-provider-id="${escapeHtml(provider.id)}" ${pooledIds.has(provider.id) ? 'checked' : ''}>${escapeHtml(provider.name)}${provider.enabled ? '' : '（已停用）'}</label>`).join('')}</div>`
+    : '';
+  return `<div class="model-row" data-model-key="${escapeHtml(key)}"><input type="checkbox" data-action="toggle-model" data-model-id="${escapeHtml(model.id)}" ${selection ? 'checked' : ''}><div><div class="model-name" title="${escapeHtml(model.id)}">${escapeHtml(model.id)}${model.providers.length > 1 ? `<span class="source-count-badge">${model.providers.length} 个站</span>` : ''}${model.supportsThinking === true ? '<span class="thinking-badge">支持思考</span>' : model.supportsThinking === null ? '<span class="thinking-badge thinking-unknown">能力未知</span>' : '<span class="thinking-badge thinking-disabled">不支持思考</span>'}</div><div class="model-info" title="${escapeHtml(providerNames)}">来源：${escapeHtml(providerNames)}</div></div><div class="model-controls"><select data-action="model-upstream" aria-label="${escapeHtml(model.id)} 的上游站点">${providerOptions}</select><input type="text" data-action="model-alias" value="${escapeHtml(selection?.localModel || model.id)}" placeholder="本地模型别名"><select data-action="thinking-level"><option value="auto" ${!selection || selection.thinkingLevel === 'auto' ? 'selected' : ''}>思考：自动</option><option value="off" ${selection?.thinkingLevel === 'off' ? 'selected' : ''}>思考：关闭</option><option value="low" ${selection?.thinkingLevel === 'low' ? 'selected' : ''}>思考：低</option><option value="medium" ${selection?.thinkingLevel === 'medium' ? 'selected' : ''}>思考：中</option><option value="high" ${selection?.thinkingLevel === 'high' ? 'selected' : ''}>思考：高</option></select></div>${poolMarkup}</div>`;
 }
 
 function renderPrefixGroup(prefix, visibleModels, allModels, selections) {
@@ -295,6 +311,8 @@ function renderMetrics() {
     $('#upstreamStats').innerHTML = '';
     $('#requestLogBody').innerHTML = '';
     $('#metricsEmpty').classList.remove('hidden');
+    $('#requestLogMore')?.classList.add('hidden');
+    if ($('#requestLogSummary')) $('#requestLogSummary').textContent = '仅记录元数据';
     return;
   }
   const totals = metrics.totals || {};
@@ -311,9 +329,47 @@ function renderMetrics() {
   $('#upstreamStats').innerHTML = upstreamEntries.length ? upstreamEntries.map(([name, item]) => `<div class="upstream-stat"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><span>请求 ${formatNumber(item.requests)} · 成功 ${formatNumber(item.successful)} · 失败 ${formatNumber(item.failed)}<br>Token ${formatNumber(item.totalTokens)}</span></div>`).join('') : '<div class="empty">还没有上游请求统计。</div>';
 
   const logs = metrics.logs || [];
+  state.logPage = metrics.logPage || { offset: 0, limit: logs.length, total: logs.length, hasMore: false, maxLogs: logs.length };
   $('#metricsEmpty').classList.toggle('hidden', logs.length > 0);
-  const strategyLabels = { failover: '故障转移', round_robin: '轮询', weighted: '加权轮询', random: '随机' };
-  $('#requestLogBody').innerHTML = logs.map((entry) => `<tr><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td><code>${escapeHtml(entry.model)}</code></td><td>${escapeHtml(strategyLabels[entry.strategy] || entry.strategy || '故障转移')}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="${entry.success ? 'success-text' : 'error-text'}">${entry.success ? '成功' : '失败'}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`).join('');
+  $('#requestLogBody').innerHTML = logs.map(renderLogRow).join('');
+  updateLogSummary();
+}
+
+const STRATEGY_LABELS = { failover: '故障转移', round_robin: '轮询', weighted: '加权轮询', random: '随机' };
+
+function renderLogRow(entry) {
+  return `<tr><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td><code>${escapeHtml(entry.model)}</code></td><td>${escapeHtml(STRATEGY_LABELS[entry.strategy] || entry.strategy || '故障转移')}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="${entry.success ? 'success-text' : 'error-text'}">${entry.success ? '成功' : '失败'}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`;
+}
+
+function updateLogSummary() {
+  const page = state.logPage || {};
+  const shown = $('#requestLogBody').querySelectorAll('tr').length;
+  const summary = $('#requestLogSummary');
+  if (summary) {
+    const maxLabel = page.maxLogs ? `，最多保留最近 ${formatNumber(page.maxLogs)} 条` : '';
+    summary.textContent = page.total ? `已显示 ${formatNumber(shown)} / ${formatNumber(page.total)} 条${maxLabel}，仅记录元数据` : '仅记录元数据';
+  }
+  const more = $('#requestLogMore');
+  if (more) more.classList.toggle('hidden', !page.hasMore);
+}
+
+async function loadMoreLogs() {
+  if (state.loadingMoreLogs || !state.logPage?.hasMore) return;
+  state.loadingMoreLogs = true;
+  const button = $('#loadMoreLogsButton');
+  if (button) { button.disabled = true; button.textContent = '加载中…'; }
+  const shown = $('#requestLogBody').querySelectorAll('tr').length;
+  try {
+    const page = await api(`/api/admin/metrics/logs?offset=${shown}&limit=100`);
+    $('#requestLogBody').insertAdjacentHTML('beforeend', (page.items || []).map(renderLogRow).join(''));
+    state.logPage = { ...state.logPage, offset: page.offset, total: page.total, hasMore: page.hasMore, maxLogs: page.maxLogs };
+    updateLogSummary();
+  } catch (error) {
+    toast(error.message, 'error');
+  } finally {
+    state.loadingMoreLogs = false;
+    if (button) { button.disabled = false; button.textContent = '加载更多'; }
+  }
 }
 
 async function loadConfig() {
@@ -785,6 +841,7 @@ $('#upstreamList').addEventListener('click', handleListClick);
 $('#routeList').addEventListener('click', handleListClick);
 $('#keyList').addEventListener('click', handleListClick);
 $('#clearMetricsButton').addEventListener('click', clearMetrics);
+$('#loadMoreLogsButton').addEventListener('click', loadMoreLogs);
 $('#syncAllModelsButton').addEventListener('click', syncAllModels);
 $('#saveModelSelectionsButton').addEventListener('click', saveModelSelections);
 $('#modelCatalogSearch').addEventListener('input', () => { syncRenderedModelDraft(); renderModelCatalog(); });
@@ -798,7 +855,14 @@ $('#modelCatalogList').addEventListener('click', (event) => {
   if (button.dataset.action === 'select-prefix') batchSelectModels(button.dataset.prefix, true);
   if (button.dataset.action === 'clear-prefix') batchSelectModels(button.dataset.prefix, false);
 });
-$('#modelCatalogList').addEventListener('change', syncRenderedModelDraft);
+$('#modelCatalogList').addEventListener('change', (event) => {
+  if (event.target.matches('[data-action="model-upstream"]')) {
+    const row = event.target.closest('.model-row');
+    const pool = row?.querySelector('[data-role="model-pool"]');
+    if (pool) pool.classList.toggle('hidden', event.target.value !== '__auto__');
+  }
+  syncRenderedModelDraft();
+});
 $('#modelCatalogList').addEventListener('input', (event) => {
   if (event.target.matches('[data-action="model-alias"]')) syncRenderedModelDraft();
 });

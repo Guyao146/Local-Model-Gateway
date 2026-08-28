@@ -21,6 +21,15 @@
     return String(modelId || '').trim();
   }
 
+  // Round-robin pool for a model: keep the stations that were already picked, drop
+  // stations that no longer provide the model, and fall back to every provider when
+  // fewer than two remain (a pool of one cannot round-robin).
+  function pooledUpstreamIds(selection, providerIds) {
+    const saved = Array.isArray(selection?.upstreamIds) ? selection.upstreamIds.map(String) : [];
+    const kept = providerIds.filter((id) => saved.includes(id));
+    return kept.length >= 2 ? kept : providerIds;
+  }
+
   function mergeModelsById(upstreams) {
     const merged = new Map();
     for (const upstream of Array.isArray(upstreams) ? upstreams : []) {
@@ -101,10 +110,12 @@
       const previous = next.get(key) || {};
       const previousProviderId = providerIds.includes(previous.upstreamId) ? previous.upstreamId : providerIds[0];
       const automatic = providerIds.length > 1 && (!previous.upstreamMode || previous.upstreamMode === 'auto');
+      // Batch selection must not widen an existing round-robin pool back to every station.
+      const pooledIds = pooledUpstreamIds(previous, providerIds);
       next.set(key, {
         ...previous,
-        upstreamId: automatic ? providerIds[0] : previousProviderId,
-        upstreamIds: automatic ? providerIds : [previousProviderId],
+        upstreamId: automatic ? pooledIds[0] : previousProviderId,
+        upstreamIds: automatic ? pooledIds : [previousProviderId],
         upstreamMode: automatic ? 'auto' : 'fixed',
         upstreamModel: modelId,
         localModel: previous.localModel || modelId,
@@ -121,6 +132,7 @@
     modelGroupKey,
     modelPrefix,
     modelSelectionKey,
+    pooledUpstreamIds,
     setModelsSelected,
     setUnifiedModelsSelected,
     unifiedModelSelectionKey

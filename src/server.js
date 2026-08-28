@@ -23,7 +23,7 @@ const {
   responsesResponseSkeleton,
   textFromContent
 } = require('./protocol');
-const { recordRequest, getMetrics, clearMetrics } = require('./metrics');
+const { recordRequest, getMetrics, getLogs, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
 const { createAdminAuth } = require('./admin-auth');
 const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
@@ -1946,7 +1946,13 @@ async function handleAdmin(req, res, pathname) {
     return;
   }
   if (req.method === 'GET' && pathname === '/api/admin/metrics') {
-    sendJson(res, 200, getMetrics());
+    const query = new URL(req.url, `http://${req.headers.host || 'localhost'}`).searchParams;
+    sendJson(res, 200, getMetrics({ limit: query.get('limit'), offset: query.get('offset') }));
+    return;
+  }
+  if (req.method === 'GET' && pathname === '/api/admin/metrics/logs') {
+    const query = new URL(req.url, `http://${req.headers.host || 'localhost'}`).searchParams;
+    sendJson(res, 200, getLogs({ limit: query.get('limit'), offset: query.get('offset') }));
     return;
   }
   if (req.method === 'DELETE' && pathname === '/api/admin/metrics') {
