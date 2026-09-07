@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>LocalModelGateway.WebView2</AssemblyName>
+    <RootNamespace>LocalModelGateway.WebView2</RootNamespace>
+    <Version>1.0.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3485.44" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="gateway\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="runtime\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -70,6 +70,23 @@ node src/server.js
 
 ## 配置备份与迁移
 
+## 自动升级
+
+项目的 `.github/workflows/release.yml` 会在推送匹配 `vX.Y.Z` 的 tag 时创建源码升级包：
+
+```text
+local-model-gateway-vX.Y.Z.tar.gz
+```
+
+后台“版本与升级”会从固定 GitHub 仓库读取正式 Release。只有找到匹配版本、HTTPS 下载地址和
+GitHub SHA-256 digest 时，才会显示“自动升级”。升级器会下载并校验压缩包，保留 `data/`，
+备份当前程序，替换程序文件后重启；校验、解压或版本不匹配会尝试回滚。升级期间不要手动终止
+Node 进程或删除 `.backup-*` 临时目录。
+
+
+同一个 Release 还会包含 Windows 客户端：`WebView2-win-x64.zip`、`Electron-win-x64-Setup.exe`
+和 `Electron-win-x64-Portable.exe`。前者使用 .NET 8 + Edge WebView2，后两者使用 Electron；
+两种客户端都把网关 `data/` 放在用户目录中。
 - 后台可导出完整配置（`/api/admin/config/export`）与导入
   （`/api/admin/config/import`，`preserveCredentials` 控制凭据保留）。
 - 导入会做模型选择与托管路由的一致性校验；旧版重复的同名选择自动合并（见

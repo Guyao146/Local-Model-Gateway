@@ -3,3 +3,10 @@ data/metrics.json
 data/metrics-log.jsonl
 data/*.tmp
 *.log
+node_modules/
+dist/
+bin/
+obj/
+clients/webview2/runtime/
+clients/webview2/gateway/
+clients/electron/gateway/

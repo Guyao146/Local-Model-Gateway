@@ -28,18 +28,22 @@ const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require(
 const { createAdminAuth } = require('./admin-auth');
 const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
 const { clientIdentityHeaders, normalizeClientIdentity } = require('./client-identity');
+const { checkLatestRelease, isTrustedDownloadUrl } = require('./update-checker');
 
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const MAX_BODY_SIZE = 25 * 1024 * 1024;
 const config = loadConfig();
+const packageInfo = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+const APP_VERSION = String(packageInfo.version || '0.0.0');
 const upstreamHealth = new Map();
 const upstreamBalances = new Map();
 const requestRateWindows = new Map();
 let activeModelRequests = 0;
+let serverUpdating = false;
 
 const ROUTE_STRATEGIES = STRATEGIES;
-const THINKING_LEVELS = new Set(['auto', 'off', 'low', 'medium', 'high']);
+const THINKING_LEVELS = new Set(['auto', 'client', 'off', 'low', 'medium', 'high']);
 const THINKING_BUDGETS = { low: 2048, medium: 4096, high: 8192 };
 
 function nowIso() {
@@ -578,7 +582,7 @@ function applyThinkingLevel(input, thinkingLevel, upstream, modelEntry) {
   delete result.thinkingLevel;
   const level = normalizeThinkingLevel(thinkingLevel, 'auto');
   const hasExplicitThinking = result.reasoning_effort !== undefined || result.thinking !== undefined;
-  if (hasExplicitThinking || level === 'auto' || level === 'off' || modelEntry?.supportsThinking === false) return result;
+  if (hasExplicitThinking || level === 'auto' || level === 'client' || level === 'off' || modelEntry?.supportsThinking === false) return result;
   if (upstream.protocol === 'anthropic') {
     result.thinking = { type: 'enabled', budget_tokens: THINKING_BUDGETS[level] || THINKING_BUDGETS.medium };
     const minimumMaxTokens = result.thinking.budget_tokens + 1024;
@@ -1715,7 +1719,49 @@ async function handleAdmin(req, res, pathname) {
   if (!requireAdmin(req, res)) return;
   res.setHeader('Cache-Control', 'no-store');
   if (req.method === 'GET' && pathname === '/api/admin/config') {
-    sendJson(res, 200, publicConfig(config));
+    sendJson(res, 200, { ...publicConfig(config), appVersion: APP_VERSION });
+    return;
+  }
+  if (req.method === 'GET' && pathname === '/api/admin/update-check') {
+    try {
+      sendJson(res, 200, await checkLatestRelease(APP_VERSION));
+    } catch (error) {
+      sendJson(res, 502, { error: { message: `检查更新失败：${error.message}` } });
+    }
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/admin/update') {
+    if (serverUpdating) {
+      sendJson(res, 409, { error: { message: '升级已经在进行中' } });
+      return;
+    }
+    let latest;
+    try { latest = await checkLatestRelease(APP_VERSION); } catch (error) {
+      sendJson(res, 502, { error: { message: `检查更新失败：${error.message}` } });
+      return;
+    }
+    if (!latest.updateAvailable) {
+      sendJson(res, 400, { error: { message: '当前已经是最新版本' } });
+      return;
+    }
+    const asset = latest.upgradeAsset;
+    if (!asset || !isTrustedDownloadUrl(asset.url)) {
+      sendJson(res, 409, { error: { message: '该 Release 没有带 SHA-256 校验的网关升级包，暂不能自动升级' } });
+      return;
+    }
+    serverUpdating = true;
+    sendJson(res, 202, { ok: true, message: `正在升级到 ${latest.latest.version}，服务将短暂重启`, version: latest.latest.version });
+    setTimeout(() => {
+      const child = require('node:child_process').spawn(process.execPath, [path.join(ROOT, 'src', 'updater.js'), JSON.stringify({
+        root: ROOT,
+        parentPid: process.pid,
+        version: latest.latest.version,
+        url: asset.url,
+        digest: asset.digest
+      })], { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true });
+      child.unref();
+      server.close(() => process.exit(0));
+    }, 250);
     return;
   }
   if (req.method === 'GET' && pathname === '/api/admin/model-catalog') {

@@ -46,6 +46,7 @@
 | low | `reasoning_effort: low` | `thinking: { type: "enabled", budget_tokens: 2048 }` |
 | medium | `reasoning_effort: medium` | `budget_tokens: 4096` |
 | high | `reasoning_effort: high` | `budget_tokens: 8192` |
+| client | 不主动添加，遵循客户端显式设置 | 不主动添加，遵循客户端显式设置 |
 | auto / off | 不主动添加 | 不主动添加（上游声明不支持思考时也不添加） |
 
 ---

@@ -89,6 +89,9 @@
 
 ## 思考强度识别
 
+模型选择器和手工路由都支持 `client`（界面显示为“遵循客户端设置”）。该模式不会由网关
+注入默认的 `reasoning_effort` 或 Anthropic `thinking` 参数；客户端已经提供的显式参数会原样保留。
+
 网关识别常见能力字段：`supports_thinking`、`supports_reasoning`、`thinking_levels`、
 `reasoning_effort`、`capabilities.thinking`、`supported_parameters` 等；
 部分常见 Claude 3.7/4、o1/o3/o4、GPT-5 模型还会按模型名做保守推断。

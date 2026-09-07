@@ -97,8 +97,8 @@
           <div><span class="section-number">07</span><h2>请求统计</h2></div>
           <button id="clearMetricsButton" class="button danger-outline">清空统计</button>
         </div>
-        <div id="statsGrid" class="stats-grid"></div>
-        <div class="subheading-row"><h3>按上游统计</h3></div>
+        <div class="stats-grid" id="statsGrid"></div>
+        <div class="subheading-row"><h3>按上游统计</h3><span class="muted">每 5 秒自动刷新</span></div>
         <div id="upstreamStats" class="upstream-stats"></div>
         <div class="subheading-row"><h3>最近请求</h3><span id="requestLogSummary" class="muted">仅记录元数据</span></div>
         <div class="table-wrap"><table><thead><tr><th>时间</th><th>模型</th><th>策略</th><th>上游</th><th>状态</th><th>耗时</th><th>Token</th><th>结果</th></tr></thead><tbody id="requestLogBody"></tbody></table></div>
@@ -123,6 +123,15 @@
           <div><span>Anthropic Base URL</span><code id="anthropicEndpoint"></code></div>
           <div><span>模型列表</span><code id="modelsEndpoint"></code></div>
         </div>
+      </section>
+
+      <section class="panel endpoint-panel">
+        <div class="panel-heading">
+          <div><span class="section-number">10</span><h2>版本与升级</h2></div>
+          <button id="checkUpdateButton" type="button" class="button secondary">检查更新</button>
+        </div>
+        <div id="updateStatus" class="update-status"><span>当前版本：<code id="currentVersion">读取中…</code></span><span id="updateMessage" class="muted">尚未检查</span></div>
+        <div id="updateDetails" class="update-details hidden"></div>
       </section>
     </div>
   </main>
@@ -159,7 +168,7 @@
       <label>本地模型名<input id="localModel" required placeholder="例如：claude-3-5-sonnet 或 *"></label>
       <label>选择上游<select id="routeUpstreamId" required></select></label>
       <label>上游模型名<input id="routeUpstreamModel" required placeholder="例如：claude-3-5-sonnet-20241022"></label>
-      <label>默认思考强度<select id="routeThinkingLevel"><option value="auto">自动（跟随客户端/上游默认）</option><option value="off">关闭</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+      <label>默认思考强度<select id="routeThinkingLevel"><option value="client">遵循客户端设置</option><option value="auto">自动（跟随上游默认）</option><option value="off">关闭</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
       <label>分流策略<select id="routeStrategy"><option value="failover">故障转移（按顺序）</option><option value="round_robin">轮询</option><option value="weighted">加权轮询</option><option value="random">随机</option></select></label>
       <label>备用上游 <span class="muted">（按顺序尝试；429、5xx 或连接失败时切换）</span><select id="routeFallbackIds" multiple size="4"></select></label>
       <div><label>上游权重 <span class="muted">（加权轮询使用；默认 1）</span></label><div id="routeWeights" class="route-weights"></div></div>

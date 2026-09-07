@@ -25,6 +25,10 @@
 - 模型目录会合并不同上游的同名模型，并支持按前缀展开/收起、搜索和复选框选择
 - 同名模型可自动轮询所有健康来源站，也可通过下拉框固定某一个站点
 - 可为每个模型设置本地别名和默认思考强度
+- 思考强度支持“遵循客户端设置”，选择该项时网关不注入默认思考参数，由客户端显式参数决定
+- 管理后台的上游、路由和本地 Key 卡片支持拖拽排序，顺序保存在当前浏览器中
+- 请求统计面板每 5 秒自动刷新，不会重新加载配置或打断模型选择草稿
+- 后台支持检查 GitHub Release；正式 Release 包含 SHA-256 digest 时可备份 `data/` 后自动升级并重启
 - 支持从上游模型元数据识别 reasoning/thinking 能力，并转换思考参数
 - 管理后台按访问来源认证：本机回环访问免认证，远程访问使用 Authentik OIDC
 - OIDC 使用 Authorization Code + PKCE、state、nonce、JWKS 签名校验和 HttpOnly 会话
@@ -35,6 +39,27 @@
 - 上游健康状态和内存熔断：连续失败达到阈值后暂时跳过，冷却后自动半开探测
 - 配置保存在 `data/config.json`，该文件已加入 `.gitignore`
 - 默认只监听 `127.0.0.1`，避免未经配置暴露到局域网
+
+## Windows 客户端
+
+仓库包含两种桌面客户端：
+
+- `clients/webview2`：.NET 8 WinForms + Microsoft Edge WebView2；客户端目录内带有官方
+  Node.js 20 Windows x64 runtime，网关配置保存在当前用户的 LocalAppData，不会随程序升级覆盖。
+- `clients/electron`：Electron + electron-builder；Electron 自带运行时，网关配置保存在 Electron
+  的 userData 目录。
+
+推送 `vX.Y.Z` tag 后，GitHub Actions 会在 Windows runner 上编译并创建同一个 GitHub Release，
+制品名称带有技术栈后缀：
+
+```text
+Local-Model-Gateway-X.Y.Z-WebView2-win-x64.zip
+Local-Model-Gateway-X.Y.Z-Electron-win-x64-Setup.exe
+Local-Model-Gateway-X.Y.Z-Electron-win-x64-Portable.exe
+```
+
+WebView2 客户端要求 Windows 已安装 Microsoft Edge WebView2 Runtime；Electron 客户端不要求
+额外安装 Electron。网关源码升级包另为 `local-model-gateway-vX.Y.Z.tar.gz`。
 
 ## 启动
 

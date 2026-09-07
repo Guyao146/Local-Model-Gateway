@@ -7,7 +7,9 @@ const state = {
   expandedPrefixes: new Set(),
   modelSelectionDraft: null,
   logPage: null,
-  loadingMoreLogs: false
+  loadingMoreLogs: false,
+  metricsRefreshInFlight: false,
+  metricsRefreshTimer: null
 };
 const $ = (selector) => document.querySelector(selector);
 const { groupModelsByPrefix, mergeModelsById, modelGroupKey, modelPrefix, pooledUpstreamIds, setUnifiedModelsSelected, unifiedModelSelectionKey } = window.ModelGroups;
@@ -65,6 +67,104 @@ function formatTime(value) {
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
 }
 
+function renderUpdateStatus(result) {
+  const current = result?.currentVersion || state.config?.appVersion || '-';
+  $('#currentVersion').textContent = current;
+  const message = $('#updateMessage');
+  const details = $('#updateDetails');
+  if (!result) { message.textContent = '尚未检查'; details.classList.add('hidden'); return; }
+  message.textContent = result.updateAvailable ? `发现新版本：${result.latest.version}` : `已是最新版本（检查于 ${formatTime(result.checkedAt)}）`;
+  message.className = result.updateAvailable ? 'success-text' : 'muted';
+  if (result.updateAvailable) {
+    const autoButton = result.upgradeAsset ? '<button type="button" id="autoUpdateButton" class="button primary">自动升级</button>' : '';
+    details.innerHTML = `<strong>${escapeHtml(result.latest.name)}</strong><span>发布时间：${escapeHtml(formatTime(result.latest.publishedAt))}</span><p>${escapeHtml(result.latest.body || '该版本没有发布说明。')}</p><div class="update-actions">${autoButton}<a class="button secondary" href="${escapeHtml(result.latest.url)}" target="_blank" rel="noopener noreferrer">打开 GitHub Release</a></div>`;
+    details.classList.remove('hidden');
+    $('#autoUpdateButton')?.addEventListener('click', startAutoUpdate);
+  } else details.classList.add('hidden');
+}
+
+async function startAutoUpdate() {
+  if (!window.confirm(`确认升级到 ${state.update?.latest?.version || '新版本'} 吗？服务会短暂重启，data 配置会保留。`)) return;
+  const button = $('#autoUpdateButton');
+  if (button) { button.disabled = true; button.textContent = '升级中…'; }
+  try {
+    const result = await api('/api/admin/update', { method: 'POST', body: '{}' });
+    toast(result.message || '正在升级，服务即将重启');
+    $('#updateMessage').textContent = result.message || '正在升级…';
+  } catch (error) {
+    toast(error.message, 'error');
+    if (button) { button.disabled = false; button.textContent = '自动升级'; }
+  }
+}
+
+async function checkForUpdates() {
+  const button = $('#checkUpdateButton');
+  button.disabled = true;
+  button.textContent = '检查中…';
+  try {
+    const result = await api('/api/admin/update-check');
+    state.update = result;
+    renderUpdateStatus(result);
+    toast(result.updateAvailable ? `发现新版本 ${result.latest.version}` : '当前已是最新版本');
+  } catch (error) {
+    $('#updateMessage').textContent = error.message;
+    $('#updateMessage').className = 'error-text';
+    toast(error.message, 'error');
+  } finally { button.disabled = false; button.textContent = '检查更新'; }
+}
+
+const CARD_ORDER_KEY = 'local-model-gateway.card-order.v1';
+
+function cardOrder(type) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CARD_ORDER_KEY) || '{}');
+    return Array.isArray(saved[type]) ? saved[type] : [];
+  } catch { return []; }
+}
+
+function orderedItems(type, items) {
+  const order = cardOrder(type);
+  const position = new Map(order.map((id, index) => [id, index]));
+  return [...items].sort((left, right) => {
+    const a = position.has(left.id) ? position.get(left.id) : Number.MAX_SAFE_INTEGER;
+    const b = position.has(right.id) ? position.get(right.id) : Number.MAX_SAFE_INTEGER;
+    return a - b;
+  });
+}
+
+function saveCardOrder(type, container) {
+  const ids = [...container.querySelectorAll('[data-card-id]')].map((item) => item.dataset.cardId).filter(Boolean);
+  try {
+    const saved = JSON.parse(localStorage.getItem(CARD_ORDER_KEY) || '{}');
+    saved[type] = ids;
+    localStorage.setItem(CARD_ORDER_KEY, JSON.stringify(saved));
+  } catch { /* private browsing/localStorage disabled: sorting still works until reload */ }
+}
+
+function enableCardDragging(type, container) {
+  if (!container || container.dataset.dragBound === 'true') return;
+  container.dataset.dragBound = 'true';
+  container.addEventListener('dragstart', (event) => {
+    const card = event.target.closest('[data-card-id]');
+    if (!card) { event.preventDefault(); return; }
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', card.dataset.cardId);
+    card.classList.add('dragging');
+  });
+  container.addEventListener('dragend', (event) => event.target.closest('[data-card-id]')?.classList.remove('dragging'));
+  container.addEventListener('dragover', (event) => {
+    const dragging = container.querySelector('.dragging');
+    const target = event.target.closest('[data-card-id]');
+    if (!dragging || !target || dragging === target) return;
+    event.preventDefault();
+    const rect = target.getBoundingClientRect();
+    container.insertBefore(dragging, event.clientY < rect.top + rect.height / 2 ? target : target.nextSibling);
+  });
+  container.addEventListener('drop', (event) => {
+    if (container.querySelector('.dragging')) { event.preventDefault(); saveCardOrder(type, container); }
+  });
+}
+
 function healthLabel(item) {
   if (!item) return '健康';
   if (item.state === 'open') return '已熔断';
@@ -114,7 +214,7 @@ function balanceDetails(item) {
 }
 
 function thinkingLabel(level) {
-  return { auto: '自动', off: '关闭', low: '低', medium: '中', high: '高' }[level] || '自动';
+  return { auto: '自动', client: '遵循客户端', off: '关闭', low: '低', medium: '中', high: '高' }[level] || '遵循客户端';
 }
 
 function catalogSelectionMap() {
@@ -227,7 +327,7 @@ function renderModelRow(model, selections) {
   const poolMarkup = model.providers.length > 1
     ? `<div class="model-pool${isAuto ? '' : ' hidden'}" data-role="model-pool"><span class="model-pool-label">轮询站点：</span>${model.providers.map((provider) => `<label class="model-pool-item${provider.enabled ? '' : ' disabled'}"><input type="checkbox" data-action="pool-provider" data-provider-id="${escapeHtml(provider.id)}" ${pooledIds.has(provider.id) ? 'checked' : ''}>${escapeHtml(provider.name)}${provider.enabled ? '' : '（已停用）'}</label>`).join('')}</div>`
     : '';
-  return `<div class="model-row" data-model-key="${escapeHtml(key)}"><input type="checkbox" data-action="toggle-model" data-model-id="${escapeHtml(model.id)}" ${selection ? 'checked' : ''}><div><div class="model-name" title="${escapeHtml(model.id)}">${escapeHtml(model.id)}${model.providers.length > 1 ? `<span class="source-count-badge">${model.providers.length} 个站</span>` : ''}${model.supportsThinking === true ? '<span class="thinking-badge">支持思考</span>' : model.supportsThinking === null ? '<span class="thinking-badge thinking-unknown">能力未知</span>' : '<span class="thinking-badge thinking-disabled">不支持思考</span>'}</div><div class="model-info" title="${escapeHtml(providerNames)}">来源：${escapeHtml(providerNames)}</div></div><div class="model-controls"><select data-action="model-upstream" aria-label="${escapeHtml(model.id)} 的上游站点">${providerOptions}</select><input type="text" data-action="model-alias" value="${escapeHtml(selection?.localModel || model.id)}" placeholder="本地模型别名"><select data-action="thinking-level"><option value="auto" ${!selection || selection.thinkingLevel === 'auto' ? 'selected' : ''}>思考：自动</option><option value="off" ${selection?.thinkingLevel === 'off' ? 'selected' : ''}>思考：关闭</option><option value="low" ${selection?.thinkingLevel === 'low' ? 'selected' : ''}>思考：低</option><option value="medium" ${selection?.thinkingLevel === 'medium' ? 'selected' : ''}>思考：中</option><option value="high" ${selection?.thinkingLevel === 'high' ? 'selected' : ''}>思考：高</option></select></div>${poolMarkup}</div>`;
+  return `<div class="model-row" data-model-key="${escapeHtml(key)}"><input type="checkbox" data-action="toggle-model" data-model-id="${escapeHtml(model.id)}" ${selection ? 'checked' : ''}><div><div class="model-name" title="${escapeHtml(model.id)}">${escapeHtml(model.id)}${model.providers.length > 1 ? `<span class="source-count-badge">${model.providers.length} 个站</span>` : ''}${model.supportsThinking === true ? '<span class="thinking-badge">支持思考</span>' : model.supportsThinking === null ? '<span class="thinking-badge thinking-unknown">能力未知</span>' : '<span class="thinking-badge thinking-disabled">不支持思考</span>'}</div><div class="model-info" title="${escapeHtml(providerNames)}">来源：${escapeHtml(providerNames)}</div></div><div class="model-controls"><select data-action="model-upstream" aria-label="${escapeHtml(model.id)} 的上游站点">${providerOptions}</select><input type="text" data-action="model-alias" value="${escapeHtml(selection?.localModel || model.id)}" placeholder="本地模型别名"><select data-action="thinking-level"><option value="client" ${selection?.thinkingLevel === 'client' ? 'selected' : ''}>思考：遵循客户端</option><option value="auto" ${!selection || selection.thinkingLevel === 'auto' ? 'selected' : ''}>思考：自动</option><option value="off" ${selection?.thinkingLevel === 'off' ? 'selected' : ''}>思考：关闭</option><option value="low" ${selection?.thinkingLevel === 'low' ? 'selected' : ''}>思考：低</option><option value="medium" ${selection?.thinkingLevel === 'medium' ? 'selected' : ''}>思考：中</option><option value="high" ${selection?.thinkingLevel === 'high' ? 'selected' : ''}>思考：高</option></select></div>${poolMarkup}</div>`;
 }
 
 function renderPrefixGroup(prefix, visibleModels, allModels, selections) {
@@ -255,11 +355,15 @@ function renderModelCatalog() {
 
 function render() {
   if (!state.config) return;
-  const { upstreams, routes, localApiKeys } = state.config;
+  const { upstreams: rawUpstreams, routes: rawRoutes, localApiKeys: rawLocalApiKeys } = state.config;
+  const upstreams = orderedItems('upstreams', rawUpstreams);
+  const routes = orderedItems('routes', rawRoutes);
+  const localApiKeys = orderedItems('localApiKeys', rawLocalApiKeys);
   const healthById = new Map((state.health?.items || []).map((item) => [item.upstreamId, item]));
   const balanceById = new Map((state.balances?.items || []).map((item) => [item.upstreamId, item]));
   $('#upstreamList').innerHTML = upstreams.length ? upstreams.map((item) => `
-    <article class="item-card">
+    <article class="item-card" draggable="true" data-card-id="${escapeHtml(item.id)}">
+      <button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整上游卡片位置" title="拖动排序">⋮⋮</button>
       <div><div class="item-title">${escapeHtml(item.name)}</div>
         <div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">${item.protocol === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容'}</span><span class="tag">${escapeHtml(clientIdentityLabel(item))}</span><span class="tag ${healthById.get(item.id)?.state === 'open' ? 'off' : 'active'}">${healthLabel(healthById.get(item.id))}</span><span>${escapeHtml(item.baseUrl)}</span></div>
         <div class="item-meta"><span>Key：${escapeHtml(item.apiKey)}</span><span>模型：${escapeHtml((item.models || []).join(', ') || '未填写（依赖路由）')}</span>${item.modelsSyncedAt ? `<span>同步于：${escapeHtml(formatTime(item.modelsSyncedAt))}</span>` : ''}${healthById.get(item.id)?.consecutiveFailures ? `<span>连续失败：${escapeHtml(healthById.get(item.id).consecutiveFailures)} 次</span>` : ''}${healthById.get(item.id)?.openUntil ? `<span>冷却至：${escapeHtml(formatTime(healthById.get(item.id).openUntil))}</span>` : ''}</div>
@@ -271,10 +375,10 @@ function render() {
     const upstream = upstreams.find((candidate) => candidate.id === item.upstreamId);
     const fallbacks = (item.fallbackUpstreamIds || []).map((id) => upstreams.find((candidate) => candidate.id === id)?.name || '已删除').join(' → ');
     const strategy = { failover: '故障转移', round_robin: '轮询', weighted: '加权轮询', random: '随机' }[item.strategy || 'failover'] || '故障转移';
-    return `<article class="item-card"><div><div class="item-title"><code>${escapeHtml(item.localModel)}</code> <span class="muted">→</span> <code>${escapeHtml(item.upstreamModel)}</code></div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">策略：${strategy}</span><span>主上游：${escapeHtml(upstream?.name || '已删除')}</span>${fallbacks ? `<span>备用：${escapeHtml(fallbacks)}</span>` : ''}</div></div><div class="item-actions"><button class="text-button" data-action="edit-route" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button delete" data-action="delete-route" data-id="${escapeHtml(item.id)}">删除</button></div></article>`;
+    return `<article class="item-card" draggable="true" data-card-id="${escapeHtml(item.id)}"><button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整路由卡片位置" title="拖动排序">⋮⋮</button><div><div class="item-title"><code>${escapeHtml(item.localModel)}</code> <span class="muted">→</span> <code>${escapeHtml(item.upstreamModel)}</code></div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">策略：${strategy}</span><span>主上游：${escapeHtml(upstream?.name || '已删除')}</span>${fallbacks ? `<span>备用：${escapeHtml(fallbacks)}</span>` : ''}</div></div><div class="item-actions"><button class="text-button" data-action="edit-route" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button delete" data-action="delete-route" data-id="${escapeHtml(item.id)}">删除</button></div></article>`;
   }).join('') : '<div class="empty">还没有路由。只有一个启用的上游时，未配置路由的模型会自动转发。</div>';
 
-  $('#keyList').innerHTML = localApiKeys.length ? localApiKeys.map((item) => `<article class="item-card"><div><div class="item-title">${escapeHtml(item.name)}</div><div class="key-value">${escapeHtml(item.key)}</div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div></div><div class="item-actions"><button class="text-button" data-action="copy-key" data-id="${escapeHtml(item.id)}">复制</button><button class="text-button" data-action="edit-key" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button" data-action="toggle-key" data-id="${escapeHtml(item.id)}">${item.enabled ? '停用' : '启用'}</button><button class="text-button delete" data-action="delete-key" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有本地调用 Key。</div>';
+  $('#keyList').innerHTML = localApiKeys.length ? localApiKeys.map((item) => `<article class="item-card" draggable="true" data-card-id="${escapeHtml(item.id)}"><button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整 Key 卡片位置" title="拖动排序">⋮⋮</button><div><div class="item-title">${escapeHtml(item.name)}</div><div class="key-value">${escapeHtml(item.key)}</div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div></div><div class="item-actions"><button class="text-button" data-action="copy-key" data-id="${escapeHtml(item.id)}">复制</button><button class="text-button" data-action="edit-key" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button" data-action="toggle-key" data-id="${escapeHtml(item.id)}">${item.enabled ? '停用' : '启用'}</button><button class="text-button delete" data-action="delete-key" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有本地调用 Key。</div>';
 
   const settings = state.config.settings || {};
   $('#upstreamTimeoutMs').value = settings.upstreamTimeoutMs ?? 600000;
@@ -287,6 +391,9 @@ function render() {
 
   renderMetrics();
   renderModelCatalog();
+  enableCardDragging('upstreams', $('#upstreamList'));
+  enableCardDragging('routes', $('#routeList'));
+  enableCardDragging('localApiKeys', $('#keyList'));
 
   const origin = window.location.origin;
   $('#openaiEndpoint').textContent = `${origin}/v1`;
@@ -304,7 +411,7 @@ function downloadJson(fileName, data) {
   URL.revokeObjectURL(url);
 }
 
-function renderMetrics() {
+function renderMetrics(options = {}) {
   const metrics = state.metrics;
   if (!metrics) {
     $('#statsGrid').innerHTML = '<div class="empty">统计暂时不可用。</div>';
@@ -330,9 +437,25 @@ function renderMetrics() {
 
   const logs = metrics.logs || [];
   state.logPage = metrics.logPage || { offset: 0, limit: logs.length, total: logs.length, hasMore: false, maxLogs: logs.length };
-  $('#metricsEmpty').classList.toggle('hidden', logs.length > 0);
-  $('#requestLogBody').innerHTML = logs.map(renderLogRow).join('');
+  if (!options.preserveLogs) {
+    $('#metricsEmpty').classList.toggle('hidden', logs.length > 0);
+    $('#requestLogBody').innerHTML = logs.map(renderLogRow).join('');
+  }
   updateLogSummary();
+}
+
+async function refreshMetrics() {
+  if (!state.config || state.metricsRefreshInFlight) return;
+  state.metricsRefreshInFlight = true;
+  try {
+    const metrics = await api('/api/admin/metrics');
+    state.metrics = metrics;
+    renderMetrics({ preserveLogs: true });
+  } catch {
+    // Keep the last successful snapshot visible during a temporary failure.
+  } finally {
+    state.metricsRefreshInFlight = false;
+  }
 }
 
 const STRATEGY_LABELS = { failover: '故障转移', round_robin: '轮询', weighted: '加权轮询', random: '随机' };
@@ -376,6 +499,7 @@ async function loadConfig() {
   setMessage('正在读取配置…');
   try {
     state.config = await api('/api/admin/config');
+    $('#currentVersion').textContent = state.config.appVersion || state.config.version || '-';
     try {
       state.metrics = await api('/api/admin/metrics');
     } catch {
@@ -553,7 +677,7 @@ function fillRouteForm(item = null) {
   $('#routeUpstreamId').innerHTML = state.config.upstreams.map((upstream) => `<option value="${escapeHtml(upstream.id)}">${escapeHtml(upstream.name)} (${escapeHtml(upstream.protocol)})</option>`).join('');
   $('#routeUpstreamId').value = item?.upstreamId || state.config.upstreams[0]?.id || '';
   $('#routeUpstreamModel').value = item?.upstreamModel || '';
-  $('#routeThinkingLevel').value = item?.thinkingLevel || 'auto';
+  $('#routeThinkingLevel').value = item?.thinkingLevel || 'client';
   $('#routeStrategy').value = item?.strategy || 'failover';
   $('#routeFallbackIds').innerHTML = state.config.upstreams.map((upstream) => `<option value="${escapeHtml(upstream.id)}">${escapeHtml(upstream.name)} (${escapeHtml(upstream.protocol)})</option>`).join('');
   for (const option of $('#routeFallbackIds').options) option.selected = (item?.fallbackUpstreamIds || []).includes(option.value);
@@ -842,6 +966,7 @@ $('#routeList').addEventListener('click', handleListClick);
 $('#keyList').addEventListener('click', handleListClick);
 $('#clearMetricsButton').addEventListener('click', clearMetrics);
 $('#loadMoreLogsButton').addEventListener('click', loadMoreLogs);
+$('#checkUpdateButton').addEventListener('click', checkForUpdates);
 $('#syncAllModelsButton').addEventListener('click', syncAllModels);
 $('#saveModelSelectionsButton').addEventListener('click', saveModelSelections);
 $('#modelCatalogSearch').addEventListener('input', () => { syncRenderedModelDraft(); renderModelCatalog(); });
@@ -875,3 +1000,4 @@ $('#configFileInput').addEventListener('change', (event) => {
 });
 checkHealth();
 initializeAdminAccess();
+state.metricsRefreshTimer = window.setInterval(() => refreshMetrics(), 5000);
