@@ -4,7 +4,7 @@
 > 把本地客户端的 OpenAI / Anthropic / Responses 请求转发到多个可配置的上游站点，
 > 并提供后台管理、模型选择、熔断、限流、指标与请求日志。
 
-- **版本**：1.0.2（`package.json`）
+- **版本**：1.0.3（`package.json`）
 - **运行要求**：Node.js ≥ 18
 - **默认监听**：`127.0.0.1:8787`
 - **数据目录**：`data/`（可用环境变量 `LOCAL_MODEL_GATEWAY_DATA_DIR` 覆盖）

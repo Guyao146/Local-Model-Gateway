@@ -40,10 +40,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force clients/electron/gateway, clients/webview2/gateway, clients/webview2/runtime | Out-Null
-          git archive --format=tar HEAD | tar -xf - -C clients/electron/gateway
-          git archive --format=tar HEAD | tar -xf - -C clients/webview2/gateway
-          Remove-Item -Recurse -Force clients/electron/gateway/clients, clients/electron/gateway/.git -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force clients/webview2/gateway/clients, clients/webview2/gateway/.git -ErrorAction SilentlyContinue
+          git archive --format=tar HEAD -- README.md LICENSE package.json public src wiki | tar -xf - -C clients/electron/gateway
+          git archive --format=tar HEAD -- README.md LICENSE package.json public src wiki | tar -xf - -C clients/webview2/gateway
+          if (-not (Test-Path clients/electron/gateway/src/server.js)) { throw 'Electron gateway source was not staged at gateway/src/server.js' }
+          if (-not (Test-Path clients/webview2/gateway/src/server.js)) { throw 'WebView2 gateway source was not staged at gateway/src/server.js' }
+          if (-not (Test-Path clients/electron/gateway/public/index.html)) { throw 'Electron gateway public files were not staged' }
+          if (-not (Test-Path clients/webview2/gateway/public/index.html)) { throw 'WebView2 gateway public files were not staged' }
 
       - name: Download official Node.js runtime for WebView2
         shell: pwsh

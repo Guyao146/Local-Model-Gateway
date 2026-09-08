@@ -61,6 +61,9 @@ Local-Model-Gateway-X.Y.Z-Electron-win-x64-Portable.exe
 WebView2 客户端要求 Windows 已安装 Microsoft Edge WebView2 Runtime；Electron 客户端不要求
 额外安装 Electron。网关源码升级包另为 `local-model-gateway-vX.Y.Z.tar.gz`。
 
+桌面客户端会为内嵌网关自动选择空闲的 `127.0.0.1` 端口，并覆盖旧配置中的监听端口，避免
+以前手动运行网关留下的 `data/config.json` 导致客户端白屏或连接到错误端口。
+
 ## 启动
 
 需要 Node.js 18 或更高版本（当前服务使用 Node 18+ 内置 `fetch`）。在 Windows PowerShell 中：

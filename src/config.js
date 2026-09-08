@@ -87,6 +87,16 @@ function loadConfig() {
       modelSelectionMode: parsed.modelSelectionMode === true
     };
     merged.settings = normalizeSettings(parsed.settings || merged.settings);
+    // Desktop wrappers choose an ephemeral loopback port. Do not let an old
+    // config.json from a previous installation redirect the embedded gateway
+    // to a stale port.
+    if (process.env.LOCAL_MODEL_GATEWAY_FORCE_SETTINGS === 'true') {
+      merged.settings = normalizeSettings({
+        ...merged.settings,
+        host: process.env.HOST || merged.settings.host,
+        port: process.env.PORT || merged.settings.port
+      });
+    }
     return merged;
   } catch (error) {
     throw new Error(`配置文件损坏，无法读取 ${CONFIG_PATH}: ${error.message}`);
