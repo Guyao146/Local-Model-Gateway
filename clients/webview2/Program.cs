@@ -69,9 +69,17 @@ internal sealed class GatewayForm : Form
             };
             start.Environment["HOST"] = "127.0.0.1";
             start.Environment["PORT"] = port.ToString();
+            start.Environment["LOCAL_MODEL_GATEWAY_FORCE_HOST"] = "127.0.0.1";
+            start.Environment["LOCAL_MODEL_GATEWAY_FORCE_PORT"] = port.ToString();
             start.Environment["LOCAL_MODEL_GATEWAY_FORCE_SETTINGS"] = "true";
             start.Environment["LOCAL_MODEL_GATEWAY_DATA_DIR"] = data;
             gateway = Process.Start(start) ?? throw new InvalidOperationException("无法启动本地网关进程。");
+            gateway.EnableRaisingEvents = true;
+            gateway.Exited += (_, _) =>
+            {
+                if (gateway.ExitCode != 0 && IsHandleCreated)
+                    BeginInvoke(() => status.Text = $"Local Model Gateway 启动失败\n\n网关子进程已退出（代码 {gateway.ExitCode}）。\n\n请查看：\n{logPath}");
+            };
             gateway.OutputDataReceived += (_, args) => AppendLog(args.Data);
             gateway.ErrorDataReceived += (_, args) => AppendLog(args.Data);
             gateway.BeginOutputReadLine();

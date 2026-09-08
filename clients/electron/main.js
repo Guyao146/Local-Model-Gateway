@@ -57,14 +57,24 @@ async function startGateway() {
       ELECTRON_RUN_AS_NODE: '1',
       HOST: '127.0.0.1',
       PORT: String(gatewayPort),
+      LOCAL_MODEL_GATEWAY_FORCE_HOST: '127.0.0.1',
+      LOCAL_MODEL_GATEWAY_FORCE_PORT: String(gatewayPort),
       LOCAL_MODEL_GATEWAY_FORCE_SETTINGS: 'true',
       LOCAL_MODEL_GATEWAY_DATA_DIR: dataDir
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
   });
+  gatewayProcess.once('error', (error) => {
+    logStream?.write(`[client] 无法启动本地网关子进程：${error.stack || error.message}\n`);
+  });
   gatewayProcess.on('exit', (code) => {
     if (code !== 0) logStream?.write(`[client] Local Model Gateway 子进程退出，代码：${code}\n`);
+  });
+  gatewayProcess.on('close', (code, signal) => {
+    if (!mainWindow?.isDestroyed() && code !== 0) {
+      mainWindow.loadURL(statusHtml('Local Model Gateway 启动失败', `网关子进程已退出（代码 ${code ?? '未知'}，信号 ${signal || '无'}）。\n\n诊断日志：${path.join(app.getPath('userData'), 'gateway.log')}`)).catch(() => {});
+    }
   });
   gatewayProcess.stdout?.pipe(logStream, { end: false });
   gatewayProcess.stderr?.pipe(logStream, { end: false });

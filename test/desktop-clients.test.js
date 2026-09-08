@@ -10,10 +10,14 @@ const config = fs.readFileSync(path.join(root, 'src', 'config.js'), 'utf8');
 
 assert.match(electron, /findFreePort/);
 assert.match(electron, /LOCAL_MODEL_GATEWAY_FORCE_SETTINGS: 'true'/);
+assert.match(electron, /LOCAL_MODEL_GATEWAY_FORCE_PORT: String\(gatewayPort\)/);
+assert.match(electron, /gatewayProcess\.once\('error'/);
 assert.match(electron, /ELECTRON_RUN_AS_NODE: '1'/);
 assert.doesNotMatch(electron, /const PORT = 8787/);
 assert.match(webview, /FindFreePortAsync/);
 assert.match(webview, /LOCAL_MODEL_GATEWAY_FORCE_SETTINGS/);
+assert.match(webview, /LOCAL_MODEL_GATEWAY_FORCE_PORT/);
+assert.match(webview, /EnableRaisingEvents/);
 assert.doesNotMatch(webview, /const int Port = 8787/);
 assert.match(config, /LOCAL_MODEL_GATEWAY_FORCE_SETTINGS/);
 assert.match(workflow, /gateway\/src\/server\.js/);

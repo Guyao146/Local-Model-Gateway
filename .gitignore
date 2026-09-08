@@ -4,8 +4,16 @@ data/metrics-log.jsonl
 data/*.tmp
 *.log
 node_modules/
+clients/electron/dist/
+clients/electron/gateway/
+clients/webview2/bin/
+clients/webview2/obj/
+clients/webview2/publish/
+clients/webview2/gateway/
+clients/webview2/runtime/
 release/
 client/
 desktop-client/bin/
 desktop-client/obj/
+desktop-client/*.csproj.user
 LocalModelGateway-client-win64.zip

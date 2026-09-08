@@ -6,6 +6,7 @@ const DATA_DIR = process.env.LOCAL_MODEL_GATEWAY_DATA_DIR || path.join(__dirname
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const FORCED_HOST = String(process.env.LOCAL_MODEL_GATEWAY_FORCE_HOST || '').trim();
 const FORCED_PORT = Number(process.env.LOCAL_MODEL_GATEWAY_FORCE_PORT || 0);
+const FORCE_SETTINGS = process.env.LOCAL_MODEL_GATEWAY_FORCE_SETTINGS === 'true';
 
 function makeId(prefix) {
   return `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
@@ -89,7 +90,8 @@ function loadConfig() {
       modelSelectionMode: parsed.modelSelectionMode === true
     };
     merged.settings = normalizeSettings(parsed.settings || merged.settings);
-    if (FORCED_HOST) merged.settings.host = FORCED_HOST;
+    if (FORCE_SETTINGS || FORCED_HOST) merged.settings.host = FORCED_HOST || process.env.HOST || merged.settings.host;
+    if ((FORCE_SETTINGS || FORCED_PORT) && Number(process.env.PORT) >= 1 && Number(process.env.PORT) <= 65535) merged.settings.port = Number(process.env.PORT);
     if (FORCED_PORT >= 1 && FORCED_PORT <= 65535) merged.settings.port = FORCED_PORT;
     return merged;
   } catch (error) {

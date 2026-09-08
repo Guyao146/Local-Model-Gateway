@@ -87,8 +87,9 @@ Node 进程或删除 `.backup-*` 临时目录。
 同一个 Release 还会包含 Windows 客户端：`WebView2-win-x64.zip`、`Electron-win-x64-Setup.exe`
 和 `Electron-win-x64-Portable.exe`。前者使用 .NET 8 + Edge WebView2，后两者使用 Electron；
 两种客户端都把网关 `data/` 放在用户目录中。
-客户端启动时会自动选择空闲回环端口，并通过 `LOCAL_MODEL_GATEWAY_FORCE_SETTINGS=true` 覆盖旧配置
-中的端口，避免迁移旧配置后出现启动成功但界面白屏。
+客户端启动时会自动选择空闲回环端口，并通过 `LOCAL_MODEL_GATEWAY_FORCE_HOST`、
+`LOCAL_MODEL_GATEWAY_FORCE_PORT` 覆盖旧配置中的监听地址和端口；同时保留
+`LOCAL_MODEL_GATEWAY_FORCE_SETTINGS=true` 兼容旧版客户端，避免迁移旧配置后出现启动成功但界面白屏。
 - 后台可导出完整配置（`/api/admin/config/export`）与导入
   （`/api/admin/config/import`，`preserveCredentials` 控制凭据保留）。
 - 导入会做模型选择与托管路由的一致性校验；旧版重复的同名选择自动合并（见
