@@ -4,6 +4,8 @@ const crypto = require('node:crypto');
 
 const DATA_DIR = process.env.LOCAL_MODEL_GATEWAY_DATA_DIR || path.join(__dirname, '..', 'data');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
+const FORCED_HOST = String(process.env.LOCAL_MODEL_GATEWAY_FORCE_HOST || '').trim();
+const FORCED_PORT = Number(process.env.LOCAL_MODEL_GATEWAY_FORCE_PORT || 0);
 
 function makeId(prefix) {
   return `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
@@ -31,8 +33,8 @@ function defaultConfig() {
     modelSelections: [],
     modelSelectionMode: false,
     settings: {
-      host: process.env.HOST || '127.0.0.1',
-      port: Number(process.env.PORT || 8787),
+      host: FORCED_HOST || process.env.HOST || '127.0.0.1',
+      port: FORCED_PORT || Number(process.env.PORT || 8787),
       upstreamTimeoutMs: 600000,
       maxFallbackAttempts: 0,
       retryDelayMs: 0,
@@ -87,16 +89,8 @@ function loadConfig() {
       modelSelectionMode: parsed.modelSelectionMode === true
     };
     merged.settings = normalizeSettings(parsed.settings || merged.settings);
-    // Desktop wrappers choose an ephemeral loopback port. Do not let an old
-    // config.json from a previous installation redirect the embedded gateway
-    // to a stale port.
-    if (process.env.LOCAL_MODEL_GATEWAY_FORCE_SETTINGS === 'true') {
-      merged.settings = normalizeSettings({
-        ...merged.settings,
-        host: process.env.HOST || merged.settings.host,
-        port: process.env.PORT || merged.settings.port
-      });
-    }
+    if (FORCED_HOST) merged.settings.host = FORCED_HOST;
+    if (FORCED_PORT >= 1 && FORCED_PORT <= 65535) merged.settings.port = FORCED_PORT;
     return merged;
   } catch (error) {
     throw new Error(`配置文件损坏，无法读取 ${CONFIG_PATH}: ${error.message}`);

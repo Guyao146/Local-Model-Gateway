@@ -4,9 +4,8 @@ data/metrics-log.jsonl
 data/*.tmp
 *.log
 node_modules/
-dist/
-bin/
-obj/
-clients/webview2/runtime/
-clients/webview2/gateway/
-clients/electron/gateway/
+release/
+client/
+desktop-client/bin/
+desktop-client/obj/
+LocalModelGateway-client-win64.zip
