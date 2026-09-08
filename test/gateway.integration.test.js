@@ -310,6 +310,25 @@ async function main() {
     assert.equal(strategyMetrics.status, 200, JSON.stringify(strategyMetrics.body));
     assert.equal(strategyMetrics.body.logs.find((entry) => entry.model === 'round-robin-local').strategy, 'round_robin');
     assert.equal(strategyMetrics.body.logs.find((entry) => entry.model === 'weighted-local').strategy, 'weighted');
+    const recentUsageExport = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/export?scope=recent`, { headers: adminHeaders });
+    assert.equal(recentUsageExport.status, 200, JSON.stringify(recentUsageExport.body));
+    assert.equal(recentUsageExport.body.scope, 'recent');
+    assert.ok(Array.isArray(recentUsageExport.body.records));
+    const duplicateRecord = recentUsageExport.body.records[0];
+    const importedUsage = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/import`, {
+      method: 'POST', headers: adminHeaders, body: JSON.stringify({ records: [
+        duplicateRecord,
+        { ...duplicateRecord, id: 'imported-request-001', model: 'imported-model', success: true, status: 200, attempts: [{ upstream: 'fallback', status: 200 }], usage: { promptTokens: 4, completionTokens: 5, totalTokens: 9 } }
+      ] })
+    });
+    assert.equal(importedUsage.status, 200, JSON.stringify(importedUsage.body));
+    assert.equal(importedUsage.body.imported, 1);
+    assert.equal(importedUsage.body.duplicates, 1);
+    assert.ok(importedUsage.body.metrics.logs.some((entry) => entry.id === 'imported-request-001'));
+    const invalidUsage = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/import`, {
+      method: 'POST', headers: adminHeaders, body: JSON.stringify({ records: [{ model: 'missing-id' }] })
+    });
+    assert.equal(invalidUsage.status, 400, JSON.stringify(invalidUsage.body));
     const concurrentSettings = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
       method: 'PUT', headers: adminHeaders, body: JSON.stringify({ maxConcurrentRequests: 1, requestsPerMinute: 0 })
     });

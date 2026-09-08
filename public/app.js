@@ -13,6 +13,7 @@ const state = {
 };
 const $ = (selector) => document.querySelector(selector);
 const { groupModelsByPrefix, mergeModelsById, modelGroupKey, modelPrefix, pooledUpstreamIds, setUnifiedModelsSelected, unifiedModelSelectionKey } = window.ModelGroups;
+const PANEL_ORDER_KEY = 'local-model-gateway.panel-order.v1';
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -59,6 +60,53 @@ function closeDialog(dialog) {
   if (!dialog) return;
   if (typeof dialog.close === 'function' && dialog.open) dialog.close();
   else dialog.removeAttribute('open');
+}
+
+function enablePanelDragging() {
+  const dashboard = $('#dashboard');
+  if (!dashboard || dashboard.dataset.panelDragBound === 'true') return;
+  dashboard.dataset.panelDragBound = 'true';
+  const panels = [...dashboard.querySelectorAll(':scope > [data-panel-id]')];
+  let savedOrder = [];
+  try {
+    const saved = JSON.parse(localStorage.getItem(PANEL_ORDER_KEY) || '[]');
+    savedOrder = Array.isArray(saved) ? saved : [];
+  } catch { savedOrder = []; }
+  const byId = new Map(panels.map((panel) => [panel.dataset.panelId, panel]));
+  for (const id of savedOrder) if (byId.has(id)) dashboard.appendChild(byId.get(id));
+  for (const panel of panels) if (!savedOrder.includes(panel.dataset.panelId)) dashboard.appendChild(panel);
+  for (const panel of panels) {
+    panel.draggable = true;
+    const heading = panel.querySelector(':scope > .panel-heading > div');
+    if (heading && !heading.querySelector('[data-panel-drag-handle]')) {
+      heading.insertAdjacentHTML('afterbegin', '<button type="button" class="panel-drag-handle" data-panel-drag-handle aria-label="拖动调整功能卡片位置" title="拖动排序">⋮⋮</button>');
+    }
+  }
+  dashboard.addEventListener('dragstart', (event) => {
+    const panel = event.target.closest('[data-panel-drag-handle]')?.closest('[data-panel-id]');
+    if (!panel || panel.parentElement !== dashboard) {
+      if (event.target.closest('[data-panel-id]')?.parentElement === dashboard) event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', panel.dataset.panelId);
+    panel.classList.add('panel-dragging');
+  });
+  dashboard.addEventListener('dragover', (event) => {
+    const dragging = dashboard.querySelector(':scope > .panel-dragging');
+    const target = event.target.closest('[data-panel-id]');
+    if (!dragging || !target || target.parentElement !== dashboard || dragging === target) return;
+    event.preventDefault();
+    const rect = target.getBoundingClientRect();
+    dashboard.insertBefore(dragging, event.clientY < rect.top + rect.height / 2 ? target : target.nextSibling);
+  });
+  dashboard.addEventListener('drop', (event) => {
+    if (!dashboard.querySelector(':scope > .panel-dragging')) return;
+    event.preventDefault();
+    const order = [...dashboard.querySelectorAll(':scope > [data-panel-id]')].map((panel) => panel.dataset.panelId);
+    try { localStorage.setItem(PANEL_ORDER_KEY, JSON.stringify(order)); } catch { /* sorting remains active until reload */ }
+  });
+  dashboard.addEventListener('dragend', () => dashboard.querySelector(':scope > .panel-dragging')?.classList.remove('panel-dragging'));
 }
 
 function formatNumber(value) {
@@ -904,6 +952,20 @@ async function clearMetrics() {
   } catch (error) { toast(error.message, 'error'); }
 }
 
+async function importUsageFile(file) {
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    const records = Array.isArray(data) ? data : data?.records;
+    if (!Array.isArray(records)) throw new Error('文件不是有效的用量导出文件：缺少 records 数组');
+    if (!window.confirm(`确定导入 ${records.length} 条用量记录吗？已有相同请求 ID 的记录会自动跳过。`)) return;
+    const result = await api('/api/admin/metrics/import', { method: 'POST', body: JSON.stringify(data) });
+    state.metrics = result.metrics;
+    renderMetrics();
+    toast(`导入完成：新增 ${result.imported} 条，重复 ${result.duplicates} 条，当前保留 ${result.retained} 条`);
+  } catch (error) { toast(`导入用量失败：${error.message}`, 'error'); }
+}
+
 async function saveSettings() {
   const payload = {
     upstreamTimeoutMs: Number($('#upstreamTimeoutMs').value),
@@ -987,6 +1049,13 @@ $('#clearMetricsButton').addEventListener('click', clearMetrics);
 $('#loadMoreLogsButton').addEventListener('click', loadMoreLogs);
 $('#exportRecentUsageButton').addEventListener('click', () => exportUsage('recent'));
 $('#exportAllUsageButton').addEventListener('click', () => exportUsage('all'));
+$('#importUsageButton').addEventListener('click', () => $('#usageFileInput').click());
+$('#usageFileInput').addEventListener('change', async (event) => { await importUsageFile(event.target.files[0]); event.target.value = ''; });
+$('#importUsageButton').addEventListener('click', () => $('#usageFileInput').click());
+$('#usageFileInput').addEventListener('change', async (event) => {
+  await importUsageFile(event.target.files[0]);
+  event.target.value = '';
+});
 $('#checkUpdateButton').addEventListener('click', checkForUpdates);
 $('#syncAllModelsButton').addEventListener('click', syncAllModels);
 $('#saveModelSelectionsButton').addEventListener('click', saveModelSelections);
@@ -1026,5 +1095,6 @@ window.addEventListener('keydown', (event) => {
   }
 });
 checkHealth();
+enablePanelDragging();
 initializeAdminAccess();
 state.metricsRefreshTimer = window.setInterval(() => refreshMetrics(), 5000);

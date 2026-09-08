@@ -33,6 +33,9 @@ h2 { display: inline; margin-left: 14px; font-size: 21px; letter-spacing: -.025e
 .auth-panel { margin-top: 18px; }
 .panel-heading, .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .panel-heading > div, .dialog-heading > div { display: flex; align-items: baseline; }
+.panel-drag-handle { flex: 0 0 auto; margin-right: 9px; padding: 2px 4px; border: 0; background: transparent; color: var(--muted); cursor: grab; font-size: 15px; line-height: 1; }
+.panel-drag-handle:active { cursor: grabbing; }
+.dashboard-card.panel-dragging { opacity: .55; border-color: var(--accent); }
 .panel-actions { display: flex; align-items: center; gap: 8px; }
 .muted, .help { color: var(--muted); font-size: 12px; }
 .help { margin-top: 11px; line-height: 1.6; }

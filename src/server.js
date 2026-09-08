@@ -23,7 +23,7 @@ const {
   responsesResponseSkeleton,
   textFromContent
 } = require('./protocol');
-const { recordRequest, getMetrics, getLogs, getAllLogs, clearMetrics } = require('./metrics');
+const { recordRequest, getMetrics, getLogs, getAllLogs, importUsageRecords, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
 const { createAdminAuth } = require('./admin-auth');
 const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
@@ -2029,6 +2029,11 @@ async function handleAdmin(req, res, pathname) {
       byUpstream: snapshot.byUpstream,
       records: requestLogs
     });
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/admin/metrics/import') {
+    const body = await readBody(req);
+    sendJson(res, 200, importUsageRecords(Array.isArray(body) ? body : body.records));
     return;
   }
   if (req.method === 'DELETE' && pathname === '/api/admin/metrics') {

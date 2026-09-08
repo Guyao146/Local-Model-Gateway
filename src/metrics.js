@@ -214,6 +214,53 @@ function recordRequest(entry) {
   return logEntry;
 }
 
+function normalizeImportedLog(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw Object.assign(new Error('用量记录格式无效'), { statusCode: 400 });
+  const id = String(entry.id || '').trim();
+  if (!id || id.length > 120) throw Object.assign(new Error('用量记录缺少有效的请求 ID'), { statusCode: 400 });
+  return { ...entry, id, usage: normalizeUsage(entry.usage), attempts: normalizeAttempts(entry.attempts) };
+}
+
+function importUsageRecords(records) {
+  if (!Array.isArray(records)) throw Object.assign(new Error('用量文件缺少 records 数组'), { statusCode: 400 });
+  const existingIds = new Set(logs.map((entry) => entry.id));
+  const importedIds = new Set();
+  const accepted = [];
+  let duplicates = 0;
+  for (const raw of records) {
+    const entry = normalizeImportedLog(raw);
+    if (existingIds.has(entry.id) || importedIds.has(entry.id)) { duplicates += 1; continue; }
+    importedIds.add(entry.id);
+    accepted.push(entry);
+  }
+  const chronological = [...logs, ...accepted].sort((a, b) => new Date(a.finishedAt || a.startedAt).getTime() - new Date(b.finishedAt || b.startedAt).getTime()).slice(-MAX_LOGS);
+  logs = chronological.slice().reverse();
+  metrics = emptyMetrics();
+  for (const entry of chronological) {
+    const usage = entry.usage;
+    const attempts = entry.attempts;
+    const success = entry.success === true;
+    const totals = metrics.totals;
+    totals.requests += 1;
+    if (success) totals.successful += 1; else totals.failed += 1;
+    if (attempts.length > 1) totals.failovers += 1;
+    totals.promptTokens += usage.promptTokens;
+    totals.completionTokens += usage.completionTokens;
+    totals.totalTokens += usage.totalTokens;
+    for (const attempt of attempts) {
+      const item = metrics.byUpstream[attempt.upstream] || { requests: 0, successful: 0, failed: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+      item.requests += 1;
+      if (attempt.status !== null && attempt.status >= 200 && attempt.status < 400) item.successful += 1; else item.failed += 1;
+      if (attempt.upstream === entry.upstream) { item.promptTokens += usage.promptTokens; item.completionTokens += usage.completionTokens; item.totalTokens += usage.totalTokens; }
+      metrics.byUpstream[attempt.upstream] = item;
+    }
+  }
+  writeLogFile(chronological);
+  logFileLines = chronological.length;
+  saveMetrics();
+  return { imported: accepted.length, duplicates, retained: logs.length, metrics: getMetrics() };
+}
+
 function cloneLog(entry) {
   return {
     ...entry,
@@ -284,5 +331,6 @@ module.exports = {
   getMetrics,
   getLogs,
   getAllLogs,
+  importUsageRecords,
   clearMetrics
 };
