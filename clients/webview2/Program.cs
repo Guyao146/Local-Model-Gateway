@@ -17,7 +17,7 @@ internal static class Program
 internal sealed class GatewayForm : Form
 {
     private const int Port = 8787;
-    private readonly WebView2 webView = new() { Dock = DockStyle.Fill };
+    private readonly Microsoft.Web.WebView2.WinForms.WebView2 webView = new() { Dock = DockStyle.Fill };
     private Process? gateway;
 
     public GatewayForm()
