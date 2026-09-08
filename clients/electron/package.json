@@ -1,6 +1,6 @@
 {
   "name": "local-model-gateway-electron",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Electron desktop client for Local Model Gateway",
   "main": "main.js",
@@ -20,16 +20,16 @@
     "extraResources": [{ "from": "gateway", "to": "gateway" }],
     "directories": { "output": "dist" },
     "win": {
-      "artifactName": "Local-Model-Gateway-${version}-Electron-${arch}-${name}.${ext}",
+      "artifactName": "Local-Model-Gateway-${version}-Electron-win-${arch}-${name}.${ext}",
       "target": ["nsis", "portable"]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "Local-Model-Gateway-${version}-Electron-${arch}-Setup.${ext}"
+      "artifactName": "Local-Model-Gateway-${version}-Electron-win-${arch}-Setup.${ext}"
     },
     "portable": {
-      "artifactName": "Local-Model-Gateway-${version}-Electron-${arch}-Portable.${ext}"
+      "artifactName": "Local-Model-Gateway-${version}-Electron-win-${arch}-Portable.${ext}"
     }
   }
 }

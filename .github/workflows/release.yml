@@ -93,11 +93,11 @@ jobs:
         shell: pwsh
         run: |
           $version = node -p "require('./package.json').version"
-          $assets = @(
-            "Local-Model-Gateway-$version-WebView2-win-x64.zip",
-            "clients/electron/dist/Local-Model-Gateway-$version-Electron-win-x64-Setup.exe",
-            "clients/electron/dist/Local-Model-Gateway-$version-Electron-win-x64-Portable.exe",
-            "local-model-gateway-v$version.tar.gz"
-          )
-          foreach ($asset in $assets) { if (-not (Test-Path $asset)) { throw "Missing release asset: $asset" } }
+          $webView2 = "Local-Model-Gateway-$version-WebView2-win-x64.zip"
+          $gateway = "local-model-gateway-v$version.tar.gz"
+          $electronAssets = @(Get-ChildItem clients/electron/dist -Filter "Local-Model-Gateway-$version-Electron-*.exe" | Select-Object -ExpandProperty FullName)
+          $setup = $electronAssets | Where-Object { $_ -match '-Setup\.exe$' } | Select-Object -First 1
+          $portable = $electronAssets | Where-Object { $_ -match '-Portable\.exe$' } | Select-Object -First 1
+          $assets = @($webView2, $setup, $portable, $gateway)
+          foreach ($asset in $assets) { if ([string]::IsNullOrWhiteSpace($asset) -or -not (Test-Path $asset)) { throw "Missing release asset: $asset" } }
           gh release create "${{ github.ref_name }}" $assets --repo "${{ github.repository }}" --title "Local Model Gateway $version" --generate-notes
