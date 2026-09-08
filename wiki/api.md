@@ -9,7 +9,8 @@
 | `/health` | 无鉴权 |
 | `/auth/*` | 无鉴权（登录/登出流程本身） |
 
-所有模型调用响应都携带 `x-request-id`（客户端提供合法值时沿用，否则自动生成），
+所有模型调用响应都携带 `x-request-id`，JSON 响应体还会在首层携带 `request_id`
+（客户端提供合法值时沿用，否则自动生成），
 该 ID 会透传给上游，并写入请求日志。
 
 ---
@@ -123,6 +124,7 @@
 | --- | --- | --- |
 | GET | `/api/admin/metrics` | 聚合计数 + 一页日志；支持 `?limit=&offset=` |
 | GET | `/api/admin/metrics/logs` | 纯日志分页接口，返回 `{items, limit, offset, total, hasMore, maxLogs}` |
+| GET | `/api/admin/metrics/export?scope=recent\|all` | 导出最近 100 条或当前保留的全部用量记录（JSON） |
 | DELETE | `/api/admin/metrics` | 清空聚合计数与 JSONL 日志 |
 
 `limit` 默认 100、最大 500；`offset` 默认 0。详见 [指标与请求日志](metrics.md)。

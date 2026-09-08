@@ -23,7 +23,7 @@ const {
   responsesResponseSkeleton,
   textFromContent
 } = require('./protocol');
-const { recordRequest, getMetrics, getLogs, clearMetrics } = require('./metrics');
+const { recordRequest, getMetrics, getLogs, getAllLogs, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
 const { createAdminAuth } = require('./admin-auth');
 const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
@@ -53,6 +53,10 @@ function nowIso() {
 function log(message, details) {
   const suffix = details === undefined ? '' : ` ${JSON.stringify(details)}`;
   console.log(`[${nowIso()}] ${message}${suffix}`);
+}
+
+function logRequestError(requestId, status, body) {
+  log('model request error', { requestId, status, response: body });
 }
 
 const adminAuth = createAdminAuth({ log });
@@ -88,7 +92,10 @@ function sendJson(res, statusCode, payload, extraHeaders = {}) {
 }
 
 function sendJsonWithRequestId(res, statusCode, payload, requestId, extraHeaders = {}) {
-  sendJson(res, statusCode, payload, { 'x-request-id': requestId, ...extraHeaders });
+  const body = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? { request_id: requestId, ...payload }
+    : payload;
+  sendJson(res, statusCode, body, { 'x-request-id': requestId, ...extraHeaders });
 }
 
 function sendText(res, statusCode, body, contentType = 'text/plain; charset=utf-8') {
@@ -323,10 +330,14 @@ function requireAdmin(req, res) {
   return false;
 }
 
-function requireApiKey(req, res) {
+function requireApiKey(req, res, requestId) {
   const key = findLocalKey(getApiToken(req));
   if (key) return key;
-  sendJson(res, 401, { error: { message: '需要有效的本地 API Key', type: 'authentication_error' } });
+  const body = { error: { message: '需要有效的本地 API Key', type: 'authentication_error' } };
+  if (requestId) {
+    logRequestError(requestId, 401, body);
+    sendJsonWithRequestId(res, 401, body, requestId);
+  } else sendJson(res, 401, body);
   return null;
 }
 
@@ -1267,6 +1278,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   const wantsStream = Boolean(input.stream);
   const attempts = [];
   let selectedStrategy = 'failover';
+  log('model request started', { requestId, protocol: localProtocol, model: localModel, stream: wantsStream });
   const finishMetrics = (details) => safeRecordRequest({
     id: requestId,
     startedAt,
@@ -1358,7 +1370,9 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
       upstreamModel,
       error: errorMessage(failure.body, '所有上游都不可用')
     });
-    sendJsonWithRequestId(res, failure.status, errorForProtocol(localProtocol, failure.body, failure.status), requestId);
+    const errorResponse = errorForProtocol(localProtocol, failure.body, failure.status);
+    logRequestError(requestId, failure.status, errorResponse);
+    sendJsonWithRequestId(res, failure.status, errorResponse, requestId);
     return;
   }
 
@@ -1401,7 +1415,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     else streamUsage = await openAIStreamAsAnthropic(upstreamResponse, res, localModel);
     finishMetrics({ success: true, status: 200, upstream: upstream.name, upstreamModel, usage: streamUsage });
   } catch (error) {
-    log('stream error', { message: error.message });
+      log('stream error', { requestId, message: error.message });
     finishMetrics({ success: false, status: 502, upstream: upstream.name, upstreamModel, error: error.message });
     if (!res.writableEnded) {
       writeSse(res, { error: { message: error.message, type: 'upstream_error' } });
@@ -2001,6 +2015,22 @@ async function handleAdmin(req, res, pathname) {
     sendJson(res, 200, getLogs({ limit: query.get('limit'), offset: query.get('offset') }));
     return;
   }
+  if (req.method === 'GET' && pathname === '/api/admin/metrics/export') {
+    const query = new URL(req.url, `http://${req.headers.host || 'localhost'}`).searchParams;
+    const scope = query.get('scope') === 'all' ? 'all' : 'recent';
+    const allLogs = getAllLogs();
+    const requestLogs = scope === 'all' ? allLogs : allLogs.slice(-100);
+    const snapshot = getMetrics({ limit: 1 });
+    sendJson(res, 200, {
+      exportVersion: 1,
+      exportedAt: nowIso(),
+      scope,
+      totals: snapshot.totals,
+      byUpstream: snapshot.byUpstream,
+      records: requestLogs
+    });
+    return;
+  }
   if (req.method === 'DELETE' && pathname === '/api/admin/metrics') {
     sendJson(res, 200, clearMetrics());
     return;
@@ -2071,14 +2101,16 @@ async function requestHandler(req, res) {
   if ((pathname === '/v1/chat/completions' || pathname === '/v1/messages' || pathname === '/v1/responses') && req.method === 'POST') {
     const localProtocol = pathname === '/v1/messages' ? 'anthropic' : pathname === '/v1/responses' ? 'responses' : 'openai';
     const requestId = requestIdFromRequest(req);
-    const localKey = requireApiKey(req, res);
+    const localKey = requireApiKey(req, res, requestId);
     if (!localKey) return;
     const admission = admitModelRequest(localKey);
     if (!admission.ok) {
+      const errorResponse = errorForProtocol(localProtocol, { message: admission.message }, 429);
+      logRequestError(requestId, 429, errorResponse);
       sendJsonWithRequestId(
         res,
         429,
-        errorForProtocol(localProtocol, { message: admission.message }, 429),
+        errorResponse,
         requestId,
         { 'Retry-After': String(admission.retryAfter) }
       );
@@ -2089,10 +2121,13 @@ async function requestHandler(req, res) {
       await forwardModelRequest(req, res, localProtocol, input, requestId);
     } catch (error) {
       if (!res.headersSent) {
+        const status = error.statusCode || 400;
+        const errorResponse = errorForProtocol(localProtocol, { message: error.message }, status);
+        logRequestError(requestId, status, errorResponse);
         sendJsonWithRequestId(
           res,
-          error.statusCode || 400,
-          errorForProtocol(localProtocol, { message: error.message }, error.statusCode || 400),
+          status,
+          errorResponse,
           requestId
         );
       }

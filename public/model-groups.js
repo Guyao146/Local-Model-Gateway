@@ -27,7 +27,7 @@
   function pooledUpstreamIds(selection, providerIds) {
     const saved = Array.isArray(selection?.upstreamIds) ? selection.upstreamIds.map(String) : [];
     const kept = providerIds.filter((id) => saved.includes(id));
-    return kept.length >= 2 ? kept : providerIds;
+    return kept.length >= 2 ? saved.filter((id) => kept.includes(id)) : providerIds;
   }
 
   function mergeModelsById(upstreams) {

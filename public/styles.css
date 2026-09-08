@@ -131,6 +131,7 @@ tr:last-child td { border-bottom: 0; }
 .success-text { color: var(--accent); }
 .error-text { color: var(--danger); }
 .small-tag { display: inline-block; margin-left: 5px; padding: 2px 5px; border: 1px solid #6c5940; border-radius: 4px; color: #e7c17e; font-size: 10px; }
+.priority-input { width: 54px; margin: 0 0 0 4px; padding: 3px 5px; }
 .log-more { display: flex; justify-content: center; margin-top: 12px; }
 .log-more.hidden { display: none; }
 .endpoint-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }

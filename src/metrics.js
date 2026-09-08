@@ -247,6 +247,10 @@ function getLogs({ limit, offset } = {}) {
   };
 }
 
+function getAllLogs() {
+  return logs.slice().reverse().map(cloneLog);
+}
+
 function getMetrics(options = {}) {
   const logPage = getLogs(options);
   return {
@@ -279,5 +283,6 @@ module.exports = {
   recordRequest,
   getMetrics,
   getLogs,
+  getAllLogs,
   clearMetrics
 };

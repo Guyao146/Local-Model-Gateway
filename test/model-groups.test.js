@@ -78,7 +78,7 @@ const threeStationIds = ['up-1', 'up-2', 'up-3'];
 assert.deepEqual(pooledUpstreamIds({ upstreamIds: ['up-1', 'up-3'] }, threeStationIds), ['up-1', 'up-3'], '应保留用户勾选的轮询站点');
 assert.deepEqual(pooledUpstreamIds({ upstreamIds: ['up-1', 'gone'] }, threeStationIds), threeStationIds, '仅剩一个有效站点时回退为全部站点');
 assert.deepEqual(pooledUpstreamIds({}, threeStationIds), threeStationIds, '没有保存过轮询池时使用全部站点');
-assert.deepEqual(pooledUpstreamIds({ upstreamIds: ['up-3', 'up-1'] }, threeStationIds), ['up-1', 'up-3'], '轮询池顺序跟随来源站顺序');
+assert.deepEqual(pooledUpstreamIds({ upstreamIds: ['up-3', 'up-1'] }, threeStationIds), ['up-3', 'up-1'], '轮询池应保留用户设置的站点优先级');
 
 const narrowedDraft = new Map([['pool-model', {
   upstreamId: 'up-1',
@@ -105,6 +105,9 @@ assert.ok(appSource.includes('自动选择（${model.providers.length} 个站）
 assert.equal(appSource.includes('data-action="toggle-provider"'), false, '模型目录不应再按上游重复分组');
 assert.ok(appSource.includes('data-action="pool-provider"'), '自动选择应支持勾选参与轮询的上游站点');
 assert.ok(appSource.includes('/api/admin/metrics/logs'), '应支持分页加载请求日志');
+assert.ok(appSource.includes('/api/admin/metrics/export?scope='), '应支持导出近 100 条和全部用量记录');
+assert.ok(appSource.includes('provider-priority'), '模型应支持调整来源站使用优先级');
+assert.ok(appSource.includes("event.key === 'F5'"), '管理页面应支持 F5 刷新');
 assert.equal(appSource.includes('upstreamIds: providerIds'), false, '保存后不应把轮询池重置为全部站点');
 assert.ok(appSource.includes('pooledUpstreamIds(selection, providerIds)'), '重建草稿时应沿用已保存的轮询池');
 

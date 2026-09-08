@@ -229,6 +229,16 @@ async function main() {
     assert.equal(metrics.body.byUpstream.primary.failed, 2);
     assert.equal(metrics.body.byUpstream.fallback.successful, 3);
     assert.equal(metrics.body.byUpstream.fallback.totalTokens, 54);
+    const usageExport = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/export?scope=all`, { headers: adminHeaders });
+    assert.equal(usageExport.status, 200, JSON.stringify(usageExport.body));
+    assert.equal(usageExport.body.scope, 'all');
+    assert.equal(usageExport.body.records.length, 3);
+    assert.equal(usageExport.body.records[0].id, 'client-request-001');
+    assert.equal(directFallbackResponse.body.request_id, 'client-request-002');
+    const recentUsageExport = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/export?scope=recent`, { headers: adminHeaders });
+    assert.equal(recentUsageExport.status, 200, JSON.stringify(recentUsageExport.body));
+    assert.equal(recentUsageExport.body.scope, 'recent');
+    assert.equal(recentUsageExport.body.records.length, 3);
     const responsesResponse = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: { Authorization: `Bearer ${config.localApiKeys[0].key}` }, body: JSON.stringify({ model: 'test-local', instructions: 'Be concise', input: 'hello responses', max_output_tokens: 40 })
     });

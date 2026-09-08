@@ -27,7 +27,11 @@ async function api(path, options = {}) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 && body.error?.loginUrl) window.location.assign(body.error.loginUrl);
-    throw new Error(body.error?.message || `请求失败（${response.status}）`);
+    const requestId = response.headers.get('x-request-id');
+    const error = new Error(body.error?.message || `请求失败（${response.status}）`);
+    console.error('[Local Model Gateway] 请求失败', { requestId, status: response.status, response: body });
+    error.requestId = requestId;
+    throw error;
   }
   return body;
 }
@@ -286,6 +290,11 @@ function syncRenderedModelDraft() {
       const checked = [...row.querySelectorAll('[data-action="pool-provider"]')].filter((box) => box.checked).map((box) => box.dataset.providerId);
       // Keep at least two stations in the pool; fall back to all when the user unchecked too many.
       pooledIds = checked.length >= 2 ? providerIds.filter((id) => checked.includes(id)) : providerIds;
+      const priorityInputs = [...row.querySelectorAll('[data-action="provider-priority"]')];
+      if (priorityInputs.length) {
+        const priorities = new Map(priorityInputs.map((input) => [input.dataset.providerId, Number(input.value) || 999]));
+        pooledIds.sort((left, right) => (priorities.get(left) || 999) - (priorities.get(right) || 999));
+      }
     }
     const upstreamId = automatic ? pooledIds[0] : upstreamSelect.value;
     draft.set(key, {
@@ -325,7 +334,7 @@ function renderModelRow(model, selections) {
   const providerIds = model.providers.map((provider) => provider.id);
   const pooledIds = new Set(isAuto ? pooledUpstreamIds(selection, providerIds) : []);
   const poolMarkup = model.providers.length > 1
-    ? `<div class="model-pool${isAuto ? '' : ' hidden'}" data-role="model-pool"><span class="model-pool-label">轮询站点：</span>${model.providers.map((provider) => `<label class="model-pool-item${provider.enabled ? '' : ' disabled'}"><input type="checkbox" data-action="pool-provider" data-provider-id="${escapeHtml(provider.id)}" ${pooledIds.has(provider.id) ? 'checked' : ''}>${escapeHtml(provider.name)}${provider.enabled ? '' : '（已停用）'}</label>`).join('')}</div>`
+    ? `<div class="model-pool${isAuto ? '' : ' hidden'}" data-role="model-pool"><span class="model-pool-label">站点优先级：</span>${model.providers.map((provider) => { const priority = Math.max(1, (selection?.upstreamIds || providerIds).indexOf(provider.id) + 1); return `<label class="model-pool-item${provider.enabled ? '' : ' disabled'}"><input type="checkbox" data-action="pool-provider" data-provider-id="${escapeHtml(provider.id)}" ${pooledIds.has(provider.id) ? 'checked' : ''}><span>${escapeHtml(provider.name)}${provider.enabled ? '' : '（已停用）'}</span><input class="priority-input" type="number" min="1" max="99" value="${priority}" data-action="provider-priority" data-provider-id="${escapeHtml(provider.id)}" aria-label="${escapeHtml(provider.name)} 的使用优先级"></label>`; }).join('')}</div>`
     : '';
   return `<div class="model-row" data-model-key="${escapeHtml(key)}"><input type="checkbox" data-action="toggle-model" data-model-id="${escapeHtml(model.id)}" ${selection ? 'checked' : ''}><div><div class="model-name" title="${escapeHtml(model.id)}">${escapeHtml(model.id)}${model.providers.length > 1 ? `<span class="source-count-badge">${model.providers.length} 个站</span>` : ''}${model.supportsThinking === true ? '<span class="thinking-badge">支持思考</span>' : model.supportsThinking === null ? '<span class="thinking-badge thinking-unknown">能力未知</span>' : '<span class="thinking-badge thinking-disabled">不支持思考</span>'}</div><div class="model-info" title="${escapeHtml(providerNames)}">来源：${escapeHtml(providerNames)}</div></div><div class="model-controls"><select data-action="model-upstream" aria-label="${escapeHtml(model.id)} 的上游站点">${providerOptions}</select><input type="text" data-action="model-alias" value="${escapeHtml(selection?.localModel || model.id)}" placeholder="本地模型别名"><select data-action="thinking-level"><option value="client" ${selection?.thinkingLevel === 'client' ? 'selected' : ''}>思考：遵循客户端</option><option value="auto" ${!selection || selection.thinkingLevel === 'auto' ? 'selected' : ''}>思考：自动</option><option value="off" ${selection?.thinkingLevel === 'off' ? 'selected' : ''}>思考：关闭</option><option value="low" ${selection?.thinkingLevel === 'low' ? 'selected' : ''}>思考：低</option><option value="medium" ${selection?.thinkingLevel === 'medium' ? 'selected' : ''}>思考：中</option><option value="high" ${selection?.thinkingLevel === 'high' ? 'selected' : ''}>思考：高</option></select></div>${poolMarkup}</div>`;
 }
@@ -411,6 +420,15 @@ function downloadJson(fileName, data) {
   URL.revokeObjectURL(url);
 }
 
+async function exportUsage(scope) {
+  try {
+    const data = await api(`/api/admin/metrics/export?scope=${scope}`);
+    const label = scope === 'all' ? 'all' : 'recent-100';
+    downloadJson(`local-model-gateway-usage-${label}-${new Date().toISOString().slice(0, 10)}.json`, data);
+    toast(scope === 'all' ? `已导出全部 ${data.records.length} 条用量记录` : `已导出最近 ${data.records.length} 条历史记录`);
+  } catch (error) { toast(error.message, 'error'); }
+}
+
 function renderMetrics(options = {}) {
   const metrics = state.metrics;
   if (!metrics) {
@@ -461,7 +479,8 @@ async function refreshMetrics() {
 const STRATEGY_LABELS = { failover: '故障转移', round_robin: '轮询', weighted: '加权轮询', random: '随机' };
 
 function renderLogRow(entry) {
-  return `<tr><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td><code>${escapeHtml(entry.model)}</code></td><td>${escapeHtml(STRATEGY_LABELS[entry.strategy] || entry.strategy || '故障转移')}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="${entry.success ? 'success-text' : 'error-text'}">${entry.success ? '成功' : '失败'}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`;
+  const errorTitle = entry.error ? ` title="${escapeHtml(entry.error)}"` : '';
+  return `<tr><td><code>${escapeHtml(entry.id || '-')}</code></td><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td><code>${escapeHtml(entry.model)}</code></td><td>${escapeHtml(STRATEGY_LABELS[entry.strategy] || entry.strategy || '故障转移')}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="${entry.success ? 'success-text' : 'error-text'}"${errorTitle}>${entry.success ? '成功' : `失败：${escapeHtml(entry.error || '未知错误')}`}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`;
 }
 
 function updateLogSummary() {
@@ -966,6 +985,8 @@ $('#routeList').addEventListener('click', handleListClick);
 $('#keyList').addEventListener('click', handleListClick);
 $('#clearMetricsButton').addEventListener('click', clearMetrics);
 $('#loadMoreLogsButton').addEventListener('click', loadMoreLogs);
+$('#exportRecentUsageButton').addEventListener('click', () => exportUsage('recent'));
+$('#exportAllUsageButton').addEventListener('click', () => exportUsage('all'));
 $('#checkUpdateButton').addEventListener('click', checkForUpdates);
 $('#syncAllModelsButton').addEventListener('click', syncAllModels);
 $('#saveModelSelectionsButton').addEventListener('click', saveModelSelections);
@@ -997,6 +1018,12 @@ $('#importConfigButton').addEventListener('click', () => $('#configFileInput').c
 $('#configFileInput').addEventListener('change', (event) => {
   importConfigFile(event.target.files[0]);
   event.target.value = '';
+});
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'F5') {
+    event.preventDefault();
+    window.location.reload();
+  }
 });
 checkHealth();
 initializeAdminAccess();
