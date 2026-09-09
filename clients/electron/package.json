@@ -1,6 +1,6 @@
 {
   "name": "local-model-gateway-electron",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "description": "Electron desktop client for Local Model Gateway",
   "main": "main.js",
@@ -16,7 +16,7 @@
     "appId": "cn.mcylyr.localmodelgateway.electron",
     "productName": "Local Model Gateway Electron",
     "asar": true,
-    "files": ["main.js", "package.json"],
+    "files": ["main.js", "preload.js", "package.json"],
     "extraResources": [{ "from": "gateway", "to": "gateway" }],
     "directories": { "output": "dist" },
     "win": {
