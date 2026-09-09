@@ -1,0 +1,34 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: local-model-gateway:${GATEWAY_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    init: true
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      LOCAL_MODEL_GATEWAY_DATA_DIR: /app/data
+      AUTHENTIK_ISSUER_URL: ${AUTHENTIK_ISSUER_URL:-}
+      AUTHENTIK_CLIENT_ID: ${AUTHENTIK_CLIENT_ID:-}
+      AUTHENTIK_CLIENT_SECRET: ${AUTHENTIK_CLIENT_SECRET:-}
+      AUTHENTIK_REDIRECT_URI: ${AUTHENTIK_REDIRECT_URI:-}
+      AUTHENTIK_SCOPES: ${AUTHENTIK_SCOPES:-openid profile email}
+      AUTHENTIK_TOKEN_AUTH_METHOD: ${AUTHENTIK_TOKEN_AUTH_METHOD:-}
+      AUTHENTIK_SESSION_TTL_SECONDS: ${AUTHENTIK_SESSION_TTL_SECONDS:-28800}
+      AUTHENTIK_COOKIE_SECURE: ${AUTHENTIK_COOKIE_SECURE:-}
+      AUTHENTIK_POST_LOGOUT_REDIRECT_URI: ${AUTHENTIK_POST_LOGOUT_REDIRECT_URI:-}
+      TRUSTED_PROXY_ADDRESSES: ${TRUSTED_PROXY_ADDRESSES:-}
+    ports:
+      - "${GATEWAY_PORT:-8787}:8787"
+    volumes:
+      - ./data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 6

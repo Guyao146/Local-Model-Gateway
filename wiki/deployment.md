@@ -13,6 +13,48 @@ node src/server.js
 首次启动生成默认配置：随机 adminToken、默认本地 Key、空上游/路由，并监听
 `127.0.0.1:8787`。
 
+## Docker Compose 一键部署
+
+服务器推荐使用项目自带的 Docker Compose 方案。要求服务器已安装 Docker Engine 和
+Docker Compose Plugin（命令应为 `docker compose`）。在服务器执行：
+
+```bash
+git clone https://github.com/Guyao146/Local-Model-Gateway.git
+cd Local-Model-Gateway
+chmod +x deploy.sh
+./deploy.sh
+```
+
+脚本会自动生成 `.env`、创建 `data/`、构建并启动容器，然后等待 `/health` 通过。
+默认访问端口是 `8787`，可以在执行前设置宿主机端口：
+
+```bash
+GATEWAY_PORT=18080 ./deploy.sh
+```
+
+也可以先编辑 `.env`，填写远程管理所需的 Authentik 参数，再运行脚本。网关配置和
+密钥持久化在项目目录的 `data/`，容器删除或升级不会丢失。常用运维命令：
+
+```bash
+docker compose ps
+docker compose logs -f gateway
+docker compose restart gateway
+docker compose down
+./deploy.sh                       # 拉取/构建并更新当前版本
+tar czf gateway-data-backup.tgz data
+```
+
+公网部署不要直接把管理后台裸露在互联网上：应使用 HTTPS 反向代理，并配置完整的
+Authentik OIDC（`AUTHENTIK_REDIRECT_URI` 必须是公网 HTTPS 地址加
+`/auth/oidc/callback`）。如果 Nginx 与容器在同一台服务器，通常将
+`TRUSTED_PROXY_ADDRESSES` 设置为实际反代 socket 的**精确 IP**（不支持 CIDR）；请以
+网关日志中的反代来源为准配置。模型客户端使用：
+`https://你的域名/v1`，并携带后台生成的本地 API Key。
+
+首次访问后台后立即保存本地 API Key，并将 `.env`、`data/config.json` 和备份文件限制
+为管理员可读。Docker 方案默认以非 root 用户运行，容器内网关固定监听 `8787`，
+宿主机端口由 `GATEWAY_PORT` 控制。
+
 ## 环境变量清单
 
 | 变量 | 默认 | 说明 |

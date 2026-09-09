@@ -3,6 +3,9 @@ data/metrics.json
 data/metrics-log.jsonl
 data/*.tmp
 *.log
+.env
+.env.*
+!.env.example
 node_modules/
 clients/electron/dist/
 clients/electron/gateway/

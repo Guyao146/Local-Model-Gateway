@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+data
+release
+client
+desktop-client
+clients
+*.log
+*.zip
+Dockerfile
+docker-compose.yml
+.env
+.env.*
