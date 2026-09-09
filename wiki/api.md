@@ -28,8 +28,12 @@
 
 ### `POST /v1/responses`（OpenAI Responses API）
 
-先转换为内部 Chat Completions 格式再按路由转发；响应再转换回 Responses 格式。
-支持 `stream` 与常用字段 `input`、`instructions`、`max_output_tokens`、`tools`。
+OpenAI 上游默认优先原生转发到上游 `/v1/responses`，保留 Responses API 的工具、Agent 状态和事件。
+上游设置为“自动”时，仅对不含原生 Agent 能力的普通请求在上游返回 404/405/501 后回退到
+Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_id` 或其它原生字段的
+请求不会有损回退。Anthropic 上游和显式 Chat 模式只能使用兼容转换。
+原生模式透明保留包括 `input`、`instructions`、`tools`、`tool_choice`、`previous_response_id`、
+`include`、`reasoning` 和供应商扩展字段在内的请求字段；非流式响应与 SSE 事件同样原样转发。
 
 ### `GET /v1/models`
 

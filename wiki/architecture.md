@@ -55,7 +55,8 @@ local-model-gateway/
 
 ### `src/protocol.js`
 - `openAIToAnthropic` / `anthropicToOpenAI` / `openAIResponseToAnthropic` / `anthropicResponseToOpenAI`。
-- `responseInputToOpenAI` / `openAIResponseToResponses`：Responses API 与 Chat Completions 互转。
+- `responseInputToOpenAI` / `openAIResponseToResponses`：普通 Responses 请求与 Chat Completions 的兼容转换；
+  原生 Responses 请求由 `server.js` 直接透传，避免丢失 Agent 工具和扩展事件。
 - 统一流式响应的响应 ID，支持文本增量、结束事件与 usage 透传。
 
 ### `src/routing.js`

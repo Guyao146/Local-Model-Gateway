@@ -293,6 +293,29 @@ function responsesToolsToOpenAI(tools) {
   }));
 }
 
+const RESPONSES_CHAT_FALLBACK_KEYS = new Set([
+  'model', 'instructions', 'input', 'max_output_tokens', 'max_tokens', 'stream',
+  'temperature', 'top_p', 'reasoning_effort', 'thinking', 'tools', 'tool_choice', 'stop'
+]);
+const RESPONSES_CHAT_INPUT_TYPES = new Set(['message', 'function_call', 'function_call_output']);
+const RESPONSES_CHAT_CONTENT_TYPES = new Set(['input_text', 'output_text', 'text', 'input_image']);
+
+function responseRequestRequiresNative(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return true;
+  if (Object.keys(input).some((key) => !RESPONSES_CHAT_FALLBACK_KEYS.has(key))) return true;
+  if (Array.isArray(input.tools) && input.tools.some((tool) => tool && tool.type !== 'function')) return true;
+  if (input.tool_choice && typeof input.tool_choice === 'object') return true;
+  const items = Array.isArray(input.input) ? input.input : [input.input];
+  return items.some((item) => {
+    if (item === undefined || item === null || typeof item === 'string') return false;
+    if (typeof item !== 'object' || Array.isArray(item)) return true;
+    if (item.type && !RESPONSES_CHAT_INPUT_TYPES.has(item.type)) return true;
+    if (item.type === 'function_call_output' && typeof item.output !== 'string') return true;
+    const content = item.content;
+    return Array.isArray(content) && content.some((part) => part?.type && !RESPONSES_CHAT_CONTENT_TYPES.has(part.type));
+  });
+}
+
 function responseInputToOpenAI(input, model) {
   const result = {
     model,
@@ -418,5 +441,6 @@ module.exports = {
   openAIResponseToResponses,
   responsesResponseFromOpenAI,
   responsesResponseSkeleton,
-  textFromContent
+  textFromContent,
+  responseRequestRequiresNative
 };

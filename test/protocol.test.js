@@ -6,7 +6,8 @@ const {
   anthropicResponseToOpenAI,
   openAIResponseToAnthropic,
   responseInputToOpenAI,
-  openAIResponseToResponses
+  openAIResponseToResponses,
+  responseRequestRequiresNative
 } = require('../src/protocol');
 
 assert.equal(resolveEndpoint('https://example.com/v1', '/v1/models'), 'https://example.com/v1/models');
@@ -63,6 +64,10 @@ assert.equal(responsesRequest.model, 'gpt-responses');
 assert.deepEqual(responsesRequest.messages[0], { role: 'system', content: 'Be brief.' });
 assert.deepEqual(responsesRequest.messages[1], { role: 'user', content: [{ type: 'text', text: 'Hello' }] });
 assert.equal(responsesRequest.max_tokens, 80);
+assert.equal(responseRequestRequiresNative({ model: 'plain', input: 'hello', max_output_tokens: 20 }), false);
+assert.equal(responseRequestRequiresNative({ model: 'agent', input: 'use the computer', tools: [{ type: 'computer' }] }), true);
+assert.equal(responseRequestRequiresNative({ model: 'agent', previous_response_id: 'resp_previous', input: 'continue' }), true);
+assert.equal(responseRequestRequiresNative({ model: 'agent', input: [{ type: 'computer_call_output', call_id: 'call_1', output: { type: 'computer_screenshot', image_url: 'data:image/png;base64,AA==' } }] }), true);
 
 const responsesResult = openAIResponseToResponses({
   id: 'chat_response',

@@ -73,6 +73,12 @@ async function main() {
       res.end(JSON.stringify({ id: 'primary-success', model: body.model, choices: [{ index: 0, message: { role: 'assistant', content: 'served-by-primary' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
       return;
     }
+    if (req.url === '/v1/responses') {
+      res.statusCode = 404;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: { message: 'Responses API is not supported' } }));
+      return;
+    }
     res.statusCode = req.url === '/v1/chat/completions' ? 503 : 200;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify(req.url === '/v1/chat/completions'
@@ -96,6 +102,11 @@ async function main() {
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
       res.end(JSON.stringify({ id: 'fallback-result', model: body.model, choices: [{ index: 0, message: { role: 'assistant', content: 'served-by-fallback' }, finish_reason: 'stop' }], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } }));
+      return;
+    }
+    if (req.url === '/v1/responses') {
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: { message: 'Responses API is not supported' } }));
       return;
     }
     res.end(JSON.stringify({ object: 'list', data: [] }));

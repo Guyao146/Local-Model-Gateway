@@ -21,7 +21,8 @@ const {
   responseInputToOpenAI,
   responsesResponseFromOpenAI,
   responsesResponseSkeleton,
-  textFromContent
+  textFromContent,
+  responseRequestRequiresNative
 } = require('./protocol');
 const { recordRequest, getMetrics, getLogs, getAllLogs, importUsageRecords, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
@@ -592,7 +593,7 @@ function applyThinkingLevel(input, thinkingLevel, upstream, modelEntry) {
   const result = { ...(input || {}) };
   delete result.thinkingLevel;
   const level = normalizeThinkingLevel(thinkingLevel, 'auto');
-  const hasExplicitThinking = result.reasoning_effort !== undefined || result.thinking !== undefined;
+  const hasExplicitThinking = result.reasoning_effort !== undefined || result.reasoning !== undefined || result.thinking !== undefined;
   if (hasExplicitThinking || level === 'auto' || level === 'client' || level === 'off' || modelEntry?.supportsThinking === false) return result;
   if (upstream.protocol === 'anthropic') {
     result.thinking = { type: 'enabled', budget_tokens: THINKING_BUDGETS[level] || THINKING_BUDGETS.medium };
@@ -699,6 +700,8 @@ function validateBaseUrl(value) {
 function upstreamFromBody(body, existing = {}) {
   if (!body.name || !body.baseUrl) throw new Error('上游名称和地址不能为空');
   const protocol = body.protocol === 'anthropic' ? 'anthropic' : 'openai';
+  const requestedResponsesMode = body.responsesMode ?? existing.responsesMode ?? 'auto';
+  const responsesMode = ['auto', 'native', 'chat'].includes(requestedResponsesMode) ? requestedResponsesMode : 'auto';
   const authType = body.authType === 'x-api-key' || body.authType === 'none'
     ? body.authType
     : (protocol === 'anthropic' ? 'x-api-key' : 'bearer');
@@ -722,6 +725,7 @@ function upstreamFromBody(body, existing = {}) {
     baseUrl: validateBaseUrl(body.baseUrl),
     apiKey,
     protocol,
+    responsesMode,
     authType,
     models: normalizeModels(body.models),
     modelCatalog: normalizeModelCatalog(catalogInput, existing.modelCatalog, protocol),
@@ -834,12 +838,25 @@ function chooseRoute(model) {
   return { route: null, upstreams: [], strategy: 'failover' };
 }
 
-function upstreamHeaders(upstream, requestId) {
+function upstreamHeaders(upstream, requestId, incomingHeaders = {}) {
   const headers = {
     Accept: 'application/json, text/event-stream',
     'Content-Type': 'application/json',
     ...clientIdentityHeaders(upstream)
   };
+  for (const [name, value] of Object.entries(incomingHeaders)) {
+    const normalized = name.toLowerCase();
+    const allowed = normalized === 'openai-beta'
+      || normalized === 'openai-organization'
+      || normalized === 'openai-project'
+      || normalized === 'session_id'
+      || normalized === 'originator'
+      || normalized.startsWith('x-openai-')
+      || normalized.startsWith('x-codex-');
+    if (!allowed || headers[name] !== undefined || Array.isArray(value)) continue;
+    const text = String(value);
+    if (text && text.length <= 4096) headers[name] = text;
+  }
   if (upstream.authType === 'x-api-key') headers['x-api-key'] = upstream.apiKey;
   if (upstream.authType === 'bearer') headers.Authorization = `Bearer ${upstream.apiKey}`;
   if (upstream.protocol === 'anthropic') headers['anthropic-version'] = '2023-06-01';
@@ -856,14 +873,20 @@ function requestIdFromRequest(req) {
   return /^[A-Za-z0-9._:-]{1,120}$/.test(supplied) ? supplied : `req_${crypto.randomBytes(8).toString('hex')}`;
 }
 
-function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel, requestId) {
+function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel, requestId, options = {}) {
   const model = upstreamModel || safeModel(localInput);
   const modelEntry = modelEntryFor(upstream, model);
   const thinkingLevel = localInput.thinkingLevel || 'auto';
   const inputWithThinking = applyThinkingLevel(localInput, thinkingLevel, upstream, modelEntry);
+  const nativeResponses = localProtocol === 'responses'
+    && upstream.protocol === 'openai'
+    && upstream.responsesMode !== 'chat'
+    && options.forceChat !== true;
   const openAIInput = localProtocol === 'responses' ? responseInputToOpenAI(inputWithThinking, model) : inputWithThinking;
   let body;
-  if (localProtocol === upstream.protocol) {
+  if (nativeResponses) {
+    body = { ...inputWithThinking, model };
+  } else if (localProtocol === upstream.protocol) {
     body = { ...inputWithThinking, model };
   } else if (upstream.protocol === 'anthropic') {
     body = openAIToAnthropic(openAIInput, model);
@@ -871,10 +894,26 @@ function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel,
     body = localProtocol === 'anthropic' ? anthropicToOpenAI(inputWithThinking, model) : { ...openAIInput, model };
   }
   return {
-    endpoint: resolveEndpoint(upstream.baseUrl, upstream.protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'),
+    endpoint: resolveEndpoint(upstream.baseUrl, nativeResponses ? '/v1/responses' : upstream.protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'),
     body,
-    headers: upstreamHeaders(upstream, requestId)
+    headers: upstreamHeaders(upstream, requestId, options.requestHeaders),
+    nativeResponses
   };
+}
+
+function responsesNativeUnsupported(status) {
+  return status === 404 || status === 405 || status === 501;
+}
+
+function responsesNativeCapabilityError(upstream) {
+  return {
+    message: `上游“${upstream.name}”不支持 Responses API 原生 Agent 工具；请改用支持 /v1/responses 的 OpenAI 上游`,
+    type: 'unsupported_agent_capability'
+  };
+}
+
+function resetResponseBody(response) {
+  try { response.body?.cancel(); } catch { /* response body is already consumed or closed */ }
 }
 
 async function fetchUpstream(requestInfo) {
@@ -1313,13 +1352,21 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   let upstreamResponse = null;
   let upstream = null;
   let lastError = null;
+  let nativeResponses = false;
+  const requiresNativeResponses = localProtocol === 'responses' && responseRequestRequiresNative(input);
 
   for (let index = 0; index < maxAttempts; index += 1) {
     upstream = upstreams[index];
+    if (requiresNativeResponses && (upstream.protocol !== 'openai' || upstream.responsesMode === 'chat')) {
+      upstreamResponse = null;
+      attempts.push({ upstream: upstream.name, status: 400 });
+      lastError = { status: 400, body: { error: responsesNativeCapabilityError(upstream) } };
+      continue;
+    }
     const requestInput = routeThinkingLevel === 'auto' && input.thinkingLevel === undefined
       ? input
       : { ...input, thinkingLevel: input.thinkingLevel ?? routeThinkingLevel };
-    const requestInfo = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId);
+    const requestInfo = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { requestHeaders: req.headers });
     log('route request', {
       localProtocol,
       model: localModel,
@@ -1331,6 +1378,34 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     });
     try {
       upstreamResponse = await fetchUpstream(requestInfo);
+      nativeResponses = requestInfo.nativeResponses;
+      attempts.push({ upstream: upstream.name, status: upstreamResponse.status });
+      if (
+        requestInfo.nativeResponses
+        && upstream.responsesMode !== 'native'
+        && responsesNativeUnsupported(upstreamResponse.status)
+        && !requiresNativeResponses
+      ) {
+        log('upstream does not expose native Responses API, falling back to Chat Completions', {
+          upstream: upstream.name,
+          status: upstreamResponse.status
+        });
+        resetResponseBody(upstreamResponse);
+        const fallbackRequest = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { forceChat: true, requestHeaders: req.headers });
+        upstreamResponse = await fetchUpstream(fallbackRequest);
+        nativeResponses = false;
+        attempts.push({ upstream: upstream.name, status: upstreamResponse.status, fallback: 'chat_completions' });
+      }
+      if (requestInfo.nativeResponses && requiresNativeResponses && responsesNativeUnsupported(upstreamResponse.status)) {
+        const unsupportedBody = await readResponseJson(upstreamResponse);
+        upstreamResponse = null;
+        lastError = {
+          status: 400,
+          body: { error: { ...responsesNativeCapabilityError(upstream), upstream_error: errorMessage(unsupportedBody) } }
+        };
+        if (index < maxAttempts - 1) continue;
+        break;
+      }
     } catch (error) {
       const message = error.name === 'AbortError' ? '上游请求超时' : `无法连接上游：${error.message}`;
       attempts.push({ upstream: upstream.name, status: 502 });
@@ -1344,7 +1419,6 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
       break;
     }
 
-    attempts.push({ upstream: upstream.name, status: upstreamResponse.status });
     if (upstreamResponse.ok) {
       markUpstreamSuccess(upstream);
       break;
@@ -1379,7 +1453,9 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   if (!wantsStream) {
     const body = await readResponseJson(upstreamResponse);
     let result;
-    if (localProtocol === upstream.protocol) {
+    if (nativeResponses) {
+      result = { ...body, model: localModel };
+    } else if (localProtocol === upstream.protocol) {
       result = { ...body, model: localModel };
     } else if (localProtocol === 'responses') {
       const openAIResult = upstream.protocol === 'anthropic'
@@ -1405,7 +1481,8 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   });
   try {
     let streamUsage;
-    if (localProtocol === upstream.protocol) streamUsage = await pipeRawStream(upstreamResponse, res);
+    if (nativeResponses) streamUsage = await pipeRawStream(upstreamResponse, res);
+    else if (localProtocol === upstream.protocol) streamUsage = await pipeRawStream(upstreamResponse, res);
     else if (localProtocol === 'openai') streamUsage = await anthropicStreamAsOpenAI(upstreamResponse, res, localModel);
     else if (localProtocol === 'responses') {
       streamUsage = upstream.protocol === 'anthropic'

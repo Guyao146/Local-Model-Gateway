@@ -68,6 +68,11 @@ async function main() {
     let raw = '';
     for await (const chunk of req) raw += chunk;
     res.setHeader('Content-Type', 'text/event-stream');
+    if (req.url === '/v1/responses') {
+      res.statusCode = 404;
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ error: { message: 'Responses API is not supported' } }));
+    }
     if (req.url !== '/v1/chat/completions') return res.end('data: {"object":"list","data":[]}\n\n');
     const body = JSON.parse(raw);
     writeSse(res, { id: 'stream-chat', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });

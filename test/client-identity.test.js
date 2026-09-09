@@ -25,6 +25,10 @@ const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js')
 const htmlSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
 assert.ok(htmlSource.includes('id="upstreamClientIdentityPreset"'));
 assert.ok(htmlSource.includes('id="upstreamCustomUserAgent"'));
+assert.ok(htmlSource.includes('id="upstreamResponsesMode"'));
+for (const mode of ['auto', 'native', 'chat']) {
+  assert.ok(htmlSource.includes(`value="${mode}"`), `Responses API 表单缺少模式：${mode}`);
+}
 for (const preset of ['claude_code', 'codex_cli', 'cherry_studio', 'custom']) {
   assert.ok(htmlSource.includes(`value="${preset}"`), `表单缺少客户端预设：${preset}`);
 }

@@ -10,6 +10,7 @@
 
 - OpenAI 兼容接口：`POST /v1/chat/completions`、`GET /v1/models`
 - OpenAI Responses 兼容接口：`POST /v1/responses`
+- OpenAI Responses 原生透传，保留 Codex、Computer Use、Shell、Apply Patch 等 Agent 工具、状态字段和 SSE 事件
 - Anthropic 兼容接口：`POST /v1/messages`
 - OpenAI ↔ Anthropic 请求、响应和 SSE 流式响应转换
 - 流式响应保持统一的响应 ID，支持文本增量、结束事件和上游返回的 usage 统计

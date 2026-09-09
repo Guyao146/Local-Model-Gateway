@@ -729,6 +729,7 @@ function fillUpstreamForm(item = null) {
   $('#upstreamClientIdentityPreset').value = item?.clientIdentityPreset || 'default';
   $('#upstreamCustomUserAgent').value = item?.customUserAgent || '';
   updateClientIdentityFields();
+  $('#upstreamResponsesMode').value = item?.responsesMode || 'auto';
   $('#upstreamBalanceEndpoint').value = item?.balanceEndpoint || '';
   $('#upstreamModels').value = (item?.models || []).join('\n');
   $('#upstreamModelFetchMessage').textContent = '从上游的 /v1/models 自动获取';
@@ -766,6 +767,7 @@ function upstreamPayloadFromForm() {
     authType: $('#upstreamAuthType').value, apiKey: $('#upstreamApiKey').value, models: $('#upstreamModels').value,
     clientIdentityPreset: $('#upstreamClientIdentityPreset').value,
     customUserAgent: $('#upstreamClientIdentityPreset').value === 'custom' ? $('#upstreamCustomUserAgent').value.trim() : '',
+    responsesMode: $('#upstreamResponsesMode').value,
     balanceEndpoint: $('#upstreamBalanceEndpoint').value.trim(),
     enabled: $('#upstreamEnabled').checked
   };
