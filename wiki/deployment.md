@@ -15,33 +15,49 @@ node src/server.js
 
 ## Docker Compose 一键部署
 
-服务器推荐使用项目自带的 Docker Compose 方案。要求服务器已安装 Docker Engine 和
-Docker Compose Plugin（命令应为 `docker compose`）。在服务器执行：
+服务器推荐使用项目自带的 Docker Compose 方案。镜像已经发布到 GHCR，无需下载源码或
+在服务器构建。要求服务器已安装 Docker Engine 和 Docker Compose Plugin。在任意空目录
+新建 `docker-compose.yml`：
 
-```bash
-git clone https://github.com/Guyao146/Local-Model-Gateway.git
-cd Local-Model-Gateway
-chmod +x deploy.sh
-./deploy.sh
+```yaml
+services:
+  gateway:
+    image: ghcr.io/guyao146/local-model-gateway:latest
+    restart: unless-stopped
+    init: true
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      LOCAL_MODEL_GATEWAY_DATA_DIR: /app/data
+    ports:
+      - "8787:8787"
+    volumes:
+      - gateway-data:/app/data
+
+volumes:
+  gateway-data:
 ```
 
-脚本会自动生成 `.env`、创建 `data/`、构建并启动容器，然后等待 `/health` 通过。
-默认访问端口是 `8787`，可以在执行前设置宿主机端口：
+然后直接拉取并启动：
 
 ```bash
-GATEWAY_PORT=18080 ./deploy.sh
+docker compose pull
+docker compose up -d
+docker compose ps
 ```
 
-也可以先编辑 `.env`，填写远程管理所需的 Authentik 参数，再运行脚本。网关配置和
-密钥持久化在项目目录的 `data/`，容器删除或升级不会丢失。常用运维命令：
+仓库中的完整版 `docker-compose.yml` 支持 `.env` 中的 `GATEWAY_PORT`、镜像标签和
+Authentik 参数。固定版本可将镜像标签改为 `v1.2.3` 等具体 Release 标签；`latest` 跟随
+最新正式 Release。网关配置和密钥保存在 Docker 命名卷 `gateway-data`，重新创建容器
+不会丢失。常用运维命令：
 
 ```bash
 docker compose ps
 docker compose logs -f gateway
 docker compose restart gateway
 docker compose down
-./deploy.sh                       # 拉取/构建并更新当前版本
-tar czf gateway-data-backup.tgz data
+docker compose pull && docker compose up -d  # 更新镜像
+docker run --rm -v gateway-data:/data -v "$PWD":/backup alpine tar czf /backup/gateway-data-backup.tgz -C /data .
 ```
 
 公网部署不要直接把管理后台裸露在互联网上：应使用 HTTPS 反向代理，并配置完整的

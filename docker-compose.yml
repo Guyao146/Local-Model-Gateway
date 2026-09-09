@@ -1,9 +1,7 @@
 services:
   gateway:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: local-model-gateway:${GATEWAY_IMAGE_TAG:-latest}
+    image: ghcr.io/guyao146/local-model-gateway:${GATEWAY_IMAGE_TAG:-latest}
+    pull_policy: always
     restart: unless-stopped
     init: true
     environment:
@@ -23,7 +21,7 @@ services:
     ports:
       - "${GATEWAY_PORT:-8787}:8787"
     volumes:
-      - ./data:/app/data
+      - gateway-data:/app/data
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -32,3 +30,6 @@ services:
       timeout: 3s
       start_period: 10s
       retries: 6
+
+volumes:
+  gateway-data:

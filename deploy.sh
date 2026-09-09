@@ -27,9 +27,8 @@ else
   echo "Using existing configuration: $ROOT_DIR/.env"
 fi
 
-mkdir -p data
-chmod 700 data || true
-docker compose up -d --build --remove-orphans
+docker compose pull
+docker compose up -d --remove-orphans
 
 echo "Waiting for the gateway health check..."
 for attempt in {1..30}; do
