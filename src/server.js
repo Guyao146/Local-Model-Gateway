@@ -310,11 +310,28 @@ function publicUpstreamBalances() {
   };
 }
 
+function sourceDiagnostics(req) {
+  const source = adminAuth.source(req);
+  return {
+    socketAddress: source.socketAddress || '(未知)',
+    resolvedAddress: source.address || '(未解析)',
+    viaTrustedProxy: source.viaTrustedProxy,
+    untrustedForwarding: source.untrustedForwarding,
+    forwardedFor: String(req.headers['x-forwarded-for'] || '(无)'),
+    trustedProxyAddresses: [...adminAuth.trustedProxies].join(', ') || '(未配置)'
+  };
+}
+
+function sourceDiagnosticText(req) {
+  const details = sourceDiagnostics(req);
+  return `\n\n来源诊断：\nTCP 来源 IP：${details.socketAddress}\n解析后来源 IP：${details.resolvedAddress}\n可信代理匹配：${details.viaTrustedProxy ? '是' : '否'}\n存在不受信任转发头：${details.untrustedForwarding ? '是' : '否'}\nX-Forwarded-For：${details.forwardedFor}\n当前可信代理配置：${details.trustedProxyAddresses}`;
+}
+
 function requireAdmin(req, res) {
   const access = adminAuth.authenticate(req);
   if (access.ok) {
     if (!adminRequestIsSameOrigin(req, access)) {
-      sendJson(res, 403, { error: { message: '管理请求来源不受信任', type: 'forbidden' } });
+      sendJson(res, 403, { error: { message: `管理请求来源不受信任${sourceDiagnosticText(req)}`, type: 'forbidden' }, source: sourceDiagnostics(req) });
       return false;
     }
     req.adminAccess = access;
@@ -2139,7 +2156,7 @@ async function requestHandler(req, res) {
       mode: access.ok ? access.mode : 'oidc',
       configured: access.configured !== false,
       user: access.user || null,
-      error: access.ok ? null : { message: access.configured ? '需要通过 Authentik 登录' : adminAuth.configurationError() }
+      error: access.ok ? null : { message: `${access.configured ? '需要通过 Authentik 登录' : adminAuth.configurationError()}${sourceDiagnosticText(req)}` , source: sourceDiagnostics(req) }
     }, { 'Cache-Control': 'no-store' });
     return;
   }
@@ -2153,7 +2170,7 @@ async function requestHandler(req, res) {
       const login = await adminAuth.beginLogin(requestUrl.searchParams.get('returnTo'));
       sendRedirect(res, login.location, { 'Set-Cookie': login.cookie });
     } catch (error) {
-      sendText(res, error.statusCode || 503, error.message);
+      sendText(res, error.statusCode || 503, `${error.message}${sourceDiagnosticText(req)}`);
     }
     return;
   }
@@ -2234,7 +2251,7 @@ async function requestHandler(req, res) {
         return;
       }
       if (!adminRequestIsSameOrigin(req, access)) {
-        sendText(res, 403, '管理页面请求来源不受信任');
+        sendText(res, 403, `管理页面请求来源不受信任${sourceDiagnosticText(req)}`);
         return;
       }
     }

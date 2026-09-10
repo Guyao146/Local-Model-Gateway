@@ -41,4 +41,8 @@ assert.equal(isLoopbackAddress(proxiedLocal.address), true);
 const chain = requestSource(request('127.0.0.1', { 'x-forwarded-for': '198.51.100.20, 127.0.0.1' }), trusted);
 assert.equal(chain.address, '198.51.100.20');
 
+const diagnosticSource = requestSource(request('172.22.0.1', { 'x-forwarded-for': '203.0.113.10' }), trustedProxySet('127.0.0.1'));
+assert.equal(diagnosticSource.socketAddress, '172.22.0.1');
+assert.equal(diagnosticSource.viaTrustedProxy, false);
+
 console.log('admin auth tests passed');
