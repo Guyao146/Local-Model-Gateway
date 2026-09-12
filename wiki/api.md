@@ -21,6 +21,8 @@
 
 转发到 OpenAI 兼容上游的 `/v1/chat/completions`，或经协议转换转发到 Anthropic 上游的 `/v1/messages`。
 支持 `stream: true` 的 SSE 流式响应。
+当请求同时包含 function tools 与非 `none` 的 `reasoning_effort` 时，OpenAI 上游改用原生
+`/v1/responses`，响应再转换回 Chat Completions（含 function tool call 与 SSE 增量）；该组合禁止改发上游 `/v1/chat/completions`。
 
 ### `POST /v1/messages`（Anthropic Messages）
 
@@ -32,6 +34,8 @@ OpenAI 上游默认优先原生转发到上游 `/v1/responses`，保留 Response
 上游设置为“自动”时，仅对不含原生 Agent 能力的普通请求在上游返回 404/405/501 后回退到
 Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_id` 或其它原生字段的
 请求不会有损回退。Anthropic 上游和显式 Chat 模式只能使用兼容转换。
+携带 function tools 且 `reasoning_effort` 不为 `none` 的请求同样强制使用原生 `/v1/responses`；
+若上游原生端点返回 404/405/501，则返回 `unsupported_agent_capability`，不会改发 `/v1/chat/completions`。
 原生模式透明保留包括 `input`、`instructions`、`tools`、`tool_choice`、`previous_response_id`、
 `include`、`reasoning` 和供应商扩展字段在内的请求字段；非流式响应与 SSE 事件同样原样转发。
 
@@ -141,6 +145,7 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 | --- | --- | --- |
 | GET | `/health` | 健康检查：`{status:'ok', service:'local-model-gateway', time}` |
 | GET | `/auth/status` | 当前管理会话状态：`{authenticated, mode, configured, user}` |
+| GET | `/auth/login` | 网关本地登录页；不依赖 Authentik 在线，支持展示认证连接错误和重试 |
 | GET | `/auth/oidc/login` | 发起 OIDC 登录（重定向 Authentik） |
 | GET | `/auth/oidc/callback` | OIDC 回调（校验 code/state/nonce/PKCE/签名后建会话） |
 | GET / POST | `/auth/logout` | 退出登录（同时请求 Authentik end_session_endpoint） |

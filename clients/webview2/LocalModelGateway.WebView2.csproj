@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>LocalModelGateway.WebView2</AssemblyName>
     <RootNamespace>LocalModelGateway.WebView2</RootNamespace>
-    <Version>1.2.5</Version>
+    <Version>1.2.6</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>

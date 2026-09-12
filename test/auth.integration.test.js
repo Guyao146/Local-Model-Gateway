@@ -78,6 +78,8 @@ async function main() {
   let expectedNonce = '';
   let expectedChallenge = '';
   let tokenRequests = 0;
+  let discoveryRequests = 0;
+  let discoveryAvailable = false;
   const oidc = http.createServer(async (req, res) => {
     const issuer = `http://127.0.0.1:${oidc.address().port}/application/o/gateway`;
     const json = (status, body) => {
@@ -85,6 +87,11 @@ async function main() {
       res.end(JSON.stringify(body));
     };
     if (req.url === '/application/o/gateway/.well-known/openid-configuration') {
+      discoveryRequests += 1;
+      if (!discoveryAvailable) {
+        json(503, { error: 'temporarily_unavailable' });
+        return;
+      }
       json(200, {
         issuer,
         authorization_endpoint: `${issuer}/authorize`,
@@ -164,10 +171,26 @@ async function main() {
 
     const remotePage = await request(`${baseUrl}/`, { headers: remoteHeaders });
     assert.equal(remotePage.status, 302);
-    assert.match(remotePage.headers.location, /^\/auth\/oidc\/login\?/);
+    assert.match(remotePage.headers.location, /^\/auth\/login\?/);
+    assert.equal(discoveryRequests, 0, '打开登录页不应依赖 Authentik 响应');
 
+    const loginPage = await request(`${baseUrl}${remotePage.headers.location}`, { headers: remoteHeaders });
+    assert.equal(loginPage.status, 200, loginPage.raw);
+    assert.match(loginPage.raw, /使用 Authentik 登录/);
+    assert.equal(discoveryRequests, 0, '渲染登录页不应访问 Authentik discovery');
+
+    const unavailableLogin = await request(`${baseUrl}/auth/oidc/login?returnTo=%2F`, { headers: remoteHeaders });
+    assert.equal(unavailableLogin.status, 302, unavailableLogin.raw);
+    assert.match(unavailableLogin.headers.location, /^\/auth\/login\?.*error=/);
+    assert.equal(discoveryRequests, 1);
+    const unavailablePage = await request(`${baseUrl}${unavailableLogin.headers.location}`, { headers: remoteHeaders });
+    assert.equal(unavailablePage.status, 200, unavailablePage.raw);
+    assert.match(unavailablePage.raw, /使用 Authentik 登录/);
+
+    discoveryAvailable = true;
     const login = await request(`${baseUrl}/auth/oidc/login?returnTo=%2F`, { headers: remoteHeaders });
     assert.equal(login.status, 302, login.raw);
+    assert.equal(discoveryRequests, 2);
     const authorizationUrl = new URL(login.headers.location);
     assert.equal(authorizationUrl.origin, `http://127.0.0.1:${oidcPort}`);
     assert.equal(authorizationUrl.searchParams.get('client_id'), clientId);

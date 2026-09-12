@@ -125,7 +125,7 @@ $env:AUTHENTIK_REDIRECT_URI = "https://gateway.example.com/auth/oidc/callback"
 node src/server.js
 ```
 
-远程用户访问 `https://gateway.example.com/` 时会自动跳转 Authentik。认证成功后，网关验证 discovery、issuer、audience、过期时间、state、nonce、PKCE 和 ID Token 签名，并创建仅服务端保存的 `HttpOnly` 会话。服务重启后远程会话失效，需要重新登录。
+远程用户访问 `https://gateway.example.com/` 时会先进入网关自身的登录页，再由用户选择跳转 Authentik。登录页和会话状态检查不依赖 Authentik 响应，因此认证服务临时不可用时仍能显示明确错误并重新尝试，不会只留下超时或空白页面。认证成功后，网关验证 discovery、issuer、audience、过期时间、state、nonce、PKCE 和 ID Token 签名，并创建仅服务端保存的 `HttpOnly` 会话。服务重启后远程会话失效，需要重新登录。
 
 ### 3. 反向代理与来源判断
 
@@ -254,7 +254,9 @@ http://127.0.0.1:8787/v1
 
 ### OpenAI Responses API
 
-支持常见的 Responses 请求字段 `input`、`instructions`、`max_output_tokens`、`tools` 和 `stream`。请求会先转换为网关内部的 Chat Completions 格式，再按路由转发到 OpenAI 兼容或 Anthropic 上游。非流式示例：
+支持常见的 Responses 请求字段 `input`、`instructions`、`max_output_tokens`、`tools` 和 `stream`。OpenAI 上游默认优先使用原生 `/v1/responses`；普通请求在自动模式下可于原生端点不可用时兼容回退。Agent 专有字段以及“function tools + 非 `none` 的 `reasoning_effort`”必须使用原生 Responses，禁止有损回退到 `/v1/chat/completions`。非流式示例：
+
+客户端即使调用网关的 `/v1/chat/completions`，只要请求同时携带 function tools 与非 `none` 的 `reasoning_effort`，网关也会转换请求并改用上游 `/v1/responses`，随后把结果转换回 Chat Completions 格式。若对应上游被设为“仅 Chat”或没有可用的 Responses 端点，网关会返回 `unsupported_agent_capability`。
 
 ```bash
 curl http://127.0.0.1:8787/v1/responses ^

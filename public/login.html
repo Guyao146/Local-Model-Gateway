@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · Local Model Gateway</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="login-page">
+  <main class="login-layout">
+    <section class="login-intro" aria-labelledby="loginProductName">
+      <div class="login-brand"><span class="login-logo" aria-hidden="true"></span><strong id="loginProductName">本地模型网关</strong></div>
+      <div class="login-copy">
+        <div class="eyebrow">LOCAL MODEL GATEWAY</div>
+        <h1>模型、路由与用量，<br>汇入同一处管理。</h1>
+        <p>安全管理你的模型服务，认证异常也不会阻止此页面打开。</p>
+        <ul class="login-features">
+          <li><span aria-hidden="true">↗</span>统一管理 OpenAI 与 Anthropic 兼容上游</li>
+          <li><span aria-hidden="true">◷</span>查看路由状态、用量与请求记录</li>
+          <li><span aria-hidden="true">◎</span>OIDC + PKCE 保护远程管理访问</li>
+        </ul>
+      </div>
+      <div class="login-provider"><span>OIDC · PKCE</span> 由 Authentik 提供统一登录</div>
+    </section>
+
+    <section class="login-access" aria-labelledby="loginHeading">
+      <div class="login-card">
+        <div class="login-card-brand"><span class="login-logo" aria-hidden="true"></span><span>LOCAL MODEL GATEWAY</span></div>
+        <h2 id="loginHeading">欢迎回来</h2>
+        <p class="login-card-subtitle">登录后即可进入模型网关管理后台</p>
+
+        <div id="loginStatus" class="login-status" role="status" aria-live="polite">
+          <span class="login-spinner" aria-hidden="true"></span>
+          <div><small>正在检查网关会话</small><strong>检测登录状态…</strong></div>
+        </div>
+
+        <div id="loginActions" class="login-actions hidden">
+          <a id="oidcLoginButton" class="button primary login-button" href="/auth/oidc/login?returnTo=%2F">使用 Authentik 登录</a>
+          <button id="retryLoginButton" type="button" class="button secondary login-button">重新检查</button>
+        </div>
+
+        <div id="loginError" class="login-error hidden" role="alert"></div>
+        <p class="login-help">认证服务暂时不可用时，可以留在此页面稍后重试；网关模型调用接口不会受到影响。</p>
+      </div>
+      <div class="login-orbit" aria-hidden="true"></div>
+    </section>
+  </main>
+  <script src="/login.js"></script>
+</body>
+</html>

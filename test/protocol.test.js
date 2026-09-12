@@ -5,9 +5,12 @@ const {
   anthropicToOpenAI,
   anthropicResponseToOpenAI,
   openAIResponseToAnthropic,
+  openAIRequestToResponses,
+  responsesResponseToOpenAI,
   responseInputToOpenAI,
   openAIResponseToResponses,
-  responseRequestRequiresNative
+  responseRequestRequiresNative,
+  chatRequestRequiresNative
 } = require('../src/protocol');
 
 assert.equal(resolveEndpoint('https://example.com/v1', '/v1/models'), 'https://example.com/v1/models');
@@ -64,7 +67,33 @@ assert.equal(responsesRequest.model, 'gpt-responses');
 assert.deepEqual(responsesRequest.messages[0], { role: 'system', content: 'Be brief.' });
 assert.deepEqual(responsesRequest.messages[1], { role: 'user', content: [{ type: 'text', text: 'Hello' }] });
 assert.equal(responsesRequest.max_tokens, 80);
+const chatNativeRequest = openAIRequestToResponses({
+  messages: [
+    { role: 'system', content: 'Be concise.' },
+    { role: 'user', content: 'Look this up.' }
+  ],
+  tools: [{ type: 'function', function: { name: 'lookup', description: 'Look up a value', parameters: { type: 'object', properties: { key: { type: 'string' } } } } }],
+  reasoning_effort: 'medium'
+}, 'gpt-native');
+assert.equal(chatNativeRequest.model, 'gpt-native');
+assert.equal(chatNativeRequest.input[0].role, 'system');
+assert.equal(chatNativeRequest.input[1].role, 'user');
+assert.equal(chatNativeRequest.tools[0].name, 'lookup');
+assert.equal(chatNativeRequest.reasoning_effort, 'medium');
+const chatNativeResponse = responsesResponseToOpenAI({
+  id: 'resp_native',
+  status: 'completed',
+  output: [{ type: 'function_call', id: 'call_1', call_id: 'call_1', name: 'lookup', arguments: '{"key":"weather"}' }],
+  usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 }
+}, 'gpt-native');
+assert.equal(chatNativeResponse.choices[0].message.tool_calls[0].function.name, 'lookup');
+assert.equal(chatNativeResponse.choices[0].finish_reason, 'tool_calls');
+assert.equal(chatRequestRequiresNative({ messages: [{ role: 'user', content: 'hello' }], tools: [{ type: 'function', function: { name: 'lookup' } }], reasoning_effort: 'medium' }), true);
+assert.equal(chatRequestRequiresNative({ messages: [{ role: 'user', content: 'hello' }], tools: [{ type: 'function', function: { name: 'lookup' } }], reasoning_effort: 'none' }), false);
 assert.equal(responseRequestRequiresNative({ model: 'plain', input: 'hello', max_output_tokens: 20 }), false);
+assert.equal(responseRequestRequiresNative({ model: 'tools', input: 'hello', tools: [{ type: 'function', name: 'lookup' }], reasoning_effort: 'none' }), false);
+assert.equal(responseRequestRequiresNative({ model: 'tools', input: 'hello', tools: [{ type: 'function', name: 'lookup' }], reasoning_effort: 'low' }), true);
+assert.equal(responseRequestRequiresNative({ model: 'tools', input: 'hello', tools: [{ type: 'function', name: 'lookup' }], reasoning_effort: 'HIGH' }), true);
 assert.equal(responseRequestRequiresNative({ model: 'agent', input: 'use the computer', tools: [{ type: 'computer' }] }), true);
 assert.equal(responseRequestRequiresNative({ model: 'agent', previous_response_id: 'resp_previous', input: 'continue' }), true);
 assert.equal(responseRequestRequiresNative({ model: 'agent', input: [{ type: 'computer_call_output', call_id: 'call_1', output: { type: 'computer_screenshot', image_url: 'data:image/png;base64,AA==' } }] }), true);

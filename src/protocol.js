@@ -293,6 +293,89 @@ function responsesToolsToOpenAI(tools) {
   }));
 }
 
+function openAIContentToResponses(content, role) {
+  const outputType = role === 'assistant' ? 'output_text' : 'input_text';
+  if (typeof content === 'string') return [{ type: outputType, text: content }];
+  if (!Array.isArray(content)) return [];
+  return content.map((part) => {
+    if (!part || typeof part !== 'object') return null;
+    if (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') {
+      return { type: outputType, text: part.text || '' };
+    }
+    if (part.type === 'image_url' && part.image_url?.url) {
+      return { type: 'input_image', image_url: part.image_url.url };
+    }
+    return null;
+  }).filter(Boolean);
+}
+
+function openAIToolsToResponses(tools) {
+  if (!Array.isArray(tools)) return undefined;
+  return tools.filter((tool) => tool && tool.type === 'function' && tool.function).map((tool) => ({
+    type: 'function',
+    name: tool.function.name,
+    description: tool.function.description,
+    parameters: tool.function.parameters || { type: 'object', properties: {} },
+    ...(tool.function.strict !== undefined ? { strict: tool.function.strict } : {}),
+    ...(tool.strict !== undefined ? { strict: tool.strict } : {})
+  }));
+}
+
+function openAIRequestToResponses(input, model) {
+  const result = {
+    model,
+    input: [],
+    max_output_tokens: input.max_output_tokens ?? input.max_tokens ?? 4096,
+    stream: Boolean(input.stream)
+  };
+  for (const message of Array.isArray(input.messages) ? input.messages : []) {
+    if (!message || typeof message !== 'object') continue;
+    if (message.role === 'tool') {
+      result.input.push({
+        type: 'function_call_output',
+        call_id: message.tool_call_id,
+        output: textFromContent(message.content)
+      });
+      continue;
+    }
+    if (Array.isArray(message.tool_calls)) {
+      const messageContent = openAIContentToResponses(message.content, 'assistant');
+      if (messageContent.length) result.input.push({ type: 'message', role: 'assistant', content: messageContent });
+      for (const call of message.tool_calls) {
+        if (!call?.function) continue;
+        result.input.push({
+          type: 'function_call',
+          call_id: call.id,
+          name: call.function.name,
+          arguments: typeof call.function.arguments === 'string' ? call.function.arguments : JSON.stringify(call.function.arguments || {})
+        });
+      }
+      continue;
+    }
+    const content = openAIContentToResponses(message.content, message.role);
+    result.input.push({
+      type: 'message',
+      role: message.role || 'user',
+      content: content.length ? content : [{ type: 'input_text', text: '' }],
+      ...(message.name ? { name: message.name } : {})
+    });
+  }
+  if (input.temperature !== undefined) result.temperature = input.temperature;
+  if (input.top_p !== undefined) result.top_p = input.top_p;
+  if (input.reasoning_effort !== undefined) result.reasoning_effort = input.reasoning_effort;
+  if (input.tools) result.tools = openAIToolsToResponses(input.tools);
+  if (input.tool_choice !== undefined) {
+    if (typeof input.tool_choice === 'object' && input.tool_choice?.function?.name) {
+      result.tool_choice = { type: 'function', name: input.tool_choice.function.name };
+    } else {
+      result.tool_choice = input.tool_choice;
+    }
+  }
+  if (input.stop !== undefined) result.stop = input.stop;
+  if (input.parallel_tool_calls !== undefined) result.parallel_tool_calls = input.parallel_tool_calls;
+  return result;
+}
+
 const RESPONSES_CHAT_FALLBACK_KEYS = new Set([
   'model', 'instructions', 'input', 'max_output_tokens', 'max_tokens', 'stream',
   'temperature', 'top_p', 'reasoning_effort', 'thinking', 'tools', 'tool_choice', 'stop'
@@ -304,6 +387,9 @@ function responseRequestRequiresNative(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return true;
   if (Object.keys(input).some((key) => !RESPONSES_CHAT_FALLBACK_KEYS.has(key))) return true;
   if (Array.isArray(input.tools) && input.tools.some((tool) => tool && tool.type !== 'function')) return true;
+  const hasFunctionTools = Array.isArray(input.tools) && input.tools.some((tool) => tool?.type === 'function');
+  const reasoningEffort = input.reasoning_effort;
+  if (hasFunctionTools && reasoningEffort !== undefined && String(reasoningEffort).trim().toLowerCase() !== 'none') return true;
   if (input.tool_choice && typeof input.tool_choice === 'object') return true;
   const items = Array.isArray(input.input) ? input.input : [input.input];
   return items.some((item) => {
@@ -314,6 +400,15 @@ function responseRequestRequiresNative(input) {
     const content = item.content;
     return Array.isArray(content) && content.some((part) => part?.type && !RESPONSES_CHAT_CONTENT_TYPES.has(part.type));
   });
+}
+
+function chatRequestRequiresNative(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
+  const hasFunctionTools = Array.isArray(input.tools) && input.tools.some((tool) => tool?.type === 'function' && tool.function);
+  const reasoningEffort = input.reasoning_effort;
+  return hasFunctionTools
+    && reasoningEffort !== undefined
+    && String(reasoningEffort).trim().toLowerCase() !== 'none';
 }
 
 function responseInputToOpenAI(input, model) {
@@ -413,6 +508,45 @@ function openAIResponseToResponses(input, model) {
   };
 }
 
+function responsesResponseToOpenAI(input, model) {
+  const output = Array.isArray(input?.output) ? input.output : [];
+  const text = [];
+  const toolCalls = [];
+  for (const item of output) {
+    if (item?.type === 'message') {
+      for (const part of Array.isArray(item.content) ? item.content : []) {
+        if (part?.type === 'output_text' || part?.type === 'text') text.push(part.text || '');
+      }
+    }
+    if (item?.type === 'function_call') {
+      toolCalls.push({
+        id: item.call_id || item.id,
+        type: 'function',
+        function: { name: item.name, arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments || {}) }
+      });
+    }
+  }
+  const inputTokens = input?.usage?.input_tokens || 0;
+  const outputTokens = input?.usage?.output_tokens || 0;
+  const finishReason = toolCalls.length ? 'tool_calls' : (input?.status === 'incomplete' ? 'length' : 'stop');
+  return {
+    id: input?.id || `chatcmpl_${crypto.randomBytes(8).toString('hex')}`,
+    object: 'chat.completion',
+    created: input?.created_at || Math.floor(Date.now() / 1000),
+    model,
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content: text.join('') || null, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) },
+      finish_reason: finishReason
+    }],
+    usage: {
+      prompt_tokens: inputTokens,
+      completion_tokens: outputTokens,
+      total_tokens: input?.usage?.total_tokens || inputTokens + outputTokens
+    }
+  };
+}
+
 function responsesResponseFromOpenAI(input, model) {
   return openAIResponseToResponses(input, model);
 }
@@ -438,9 +572,12 @@ module.exports = {
   openAIResponseToAnthropic,
   anthropicResponseToOpenAI,
   responseInputToOpenAI,
+  openAIRequestToResponses,
   openAIResponseToResponses,
+  responsesResponseToOpenAI,
   responsesResponseFromOpenAI,
   responsesResponseSkeleton,
   textFromContent,
-  responseRequestRequiresNative
+  responseRequestRequiresNative,
+  chatRequestRequiresNative
 };

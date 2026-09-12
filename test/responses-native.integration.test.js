@@ -80,6 +80,19 @@ async function main() {
       return;
     }
     if (!body.stream) {
+      if (Array.isArray(body.tools) && body.tools.some((tool) => tool.type === 'function')) {
+        res.end(JSON.stringify({
+          id: 'resp_function_001',
+          object: 'response',
+          created_at: 1700000001,
+          status: 'completed',
+          model: body.model,
+          output: [{ type: 'function_call', id: 'call_function_001', call_id: 'call_function_001', name: body.tools[0].name, arguments: '{"key":"weather"}' }],
+          output_text: '',
+          usage: { input_tokens: 11, output_tokens: 6, total_tokens: 17 }
+        }));
+        return;
+      }
       res.end(JSON.stringify({
         id: 'resp_native_001',
         object: 'response',
@@ -96,6 +109,14 @@ async function main() {
         usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
         custom_agent_state: { preserved: true }
       }));
+      return;
+    }
+    if (Array.isArray(body.tools) && body.tools.some((tool) => tool.type === 'function')) {
+      writeSse(res, { type: 'response.created', response: { id: 'resp_function_stream', object: 'response', status: 'in_progress', model: body.model } }, 'response.created');
+      writeSse(res, { type: 'response.output_item.added', item: { id: 'call_function_stream', call_id: 'call_function_stream', type: 'function_call', name: body.tools[0].name, arguments: '' } }, 'response.output_item.added');
+      writeSse(res, { type: 'response.function_call_arguments.delta', item_id: 'call_function_stream', delta: '{"key":"weather"}' }, 'response.function_call_arguments.delta');
+      writeSse(res, { type: 'response.completed', response: { id: 'resp_function_stream', object: 'response', status: 'completed', usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 } } }, 'response.completed');
+      res.end();
       return;
     }
     writeSse(res, { type: 'response.created', response: { id: 'resp_native_stream', object: 'response', status: 'in_progress', model: body.model } }, 'response.created');
@@ -120,7 +141,7 @@ async function main() {
     const added = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
       method: 'POST',
       headers: adminHeaders,
-      body: JSON.stringify({ name: 'native-responses', baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, protocol: 'openai', authType: 'none', models: 'native-agent-model', responsesMode: 'native' })
+      body: JSON.stringify({ name: 'native-responses', baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, protocol: 'openai', authType: 'none', models: 'native-agent-model', responsesMode: 'auto' })
     });
     assert.equal(added.status, 201, output);
     const route = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/routes`, {
@@ -153,6 +174,54 @@ async function main() {
     assert.deepEqual(nativeCall.body.custom_agent_state, agentRequest.custom_agent_state);
     assert.equal(nativeCall.body.model, 'native-agent-model');
     assert.equal(nativeCall.headers['openai-beta'], 'responses=v1');
+    const functionReasoningRequest = {
+      model: 'agent-local',
+      input: 'Use the lookup function',
+      tools: [{ type: 'function', name: 'lookup', description: 'Look up a value', parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] } }],
+      reasoning_effort: 'medium'
+    };
+    const callsBeforeFunctionReasoning = received.length;
+    const functionReasoningResponse = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: 'POST', headers: localHeaders, body: JSON.stringify(functionReasoningRequest)
+    });
+    assert.equal(functionReasoningResponse.status, 200, JSON.stringify(functionReasoningResponse.json));
+    const functionReasoningCalls = received.slice(callsBeforeFunctionReasoning);
+    assert.equal(functionReasoningCalls.length, 1);
+    assert.equal(functionReasoningCalls[0].url, '/v1/responses');
+    assert.deepEqual(functionReasoningCalls[0].body.tools, functionReasoningRequest.tools);
+    assert.equal(functionReasoningCalls[0].body.reasoning_effort, 'medium');
+    const chatFunctionResponse = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST',
+      headers: localHeaders,
+      body: JSON.stringify({
+        model: 'agent-local',
+        messages: [{ role: 'user', content: 'Use the lookup function' }],
+        tools: [{ type: 'function', function: { name: 'lookup', description: 'Look up a value', parameters: { type: 'object', properties: { key: { type: 'string' } } } } }],
+        reasoning_effort: 'medium'
+      })
+    });
+    assert.equal(chatFunctionResponse.status, 200, JSON.stringify(chatFunctionResponse.json));
+    assert.equal(chatFunctionResponse.json.choices[0].finish_reason, 'tool_calls');
+    assert.equal(chatFunctionResponse.json.choices[0].message.tool_calls[0].function.name, 'lookup');
+    const chatFunctionCall = received.at(-1);
+    assert.equal(chatFunctionCall.url, '/v1/responses');
+    assert.equal(chatFunctionCall.body.reasoning_effort, 'medium');
+    assert.equal(chatFunctionCall.body.tools[0].name, 'lookup');
+    const chatFunctionStream = await request(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST',
+      headers: localHeaders,
+      body: JSON.stringify({
+        model: 'agent-local',
+        stream: true,
+        messages: [{ role: 'user', content: 'Use the lookup function' }],
+        tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object', properties: {} } } }],
+        reasoning_effort: 'medium'
+      })
+    });
+    assert.equal(chatFunctionStream.status, 200, chatFunctionStream.body);
+    assert.match(chatFunctionStream.body, /"tool_calls"/);
+    assert.match(chatFunctionStream.body, /lookup/);
+    assert.match(chatFunctionStream.body, /data: \[DONE\]/);
     const streamResponse = await request(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: { ...localHeaders, 'x-request-id': 'native-agent-stream-001' }, body: JSON.stringify({ ...agentRequest, stream: true })
     });
@@ -162,12 +231,22 @@ async function main() {
     assert.match(streamResponse.body, /event: response\.completed/);
     assert.equal(streamResponse.headers['x-request-id'], 'native-agent-stream-001');
     rejectNativeResponses = true;
+    const callsBeforeUnsupportedFunctionReasoning = received.length;
+    const unsupportedFunctionReasoning = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: 'POST', headers: localHeaders, body: JSON.stringify(functionReasoningRequest)
+    });
+    assert.equal(unsupportedFunctionReasoning.status, 400, JSON.stringify(unsupportedFunctionReasoning.json));
+    assert.equal(unsupportedFunctionReasoning.json.error.type, 'unsupported_agent_capability');
+    assert.match(unsupportedFunctionReasoning.json.error.message, /function tools 与 reasoning_effort/);
+    const unsupportedFunctionReasoningCalls = received.slice(callsBeforeUnsupportedFunctionReasoning);
+    assert.equal(unsupportedFunctionReasoningCalls.length, 1);
+    assert.equal(unsupportedFunctionReasoningCalls[0].url, '/v1/responses');
     const unsupported = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: localHeaders, body: JSON.stringify(agentRequest)
     });
     assert.equal(unsupported.status, 400, JSON.stringify(unsupported.json));
     assert.equal(unsupported.json.error.type, 'unsupported_agent_capability');
-    assert.match(unsupported.json.error.message, /不支持 Responses API 原生 Agent 工具/);
+    assert.match(unsupported.json.error.message, /不支持此请求所需的 Responses API 原生能力/);
     assert.equal(received.some((item) => item.url === '/v1/chat/completions'), false);
     console.log('native responses integration tests passed');
   } catch (error) {

@@ -23,7 +23,7 @@
 
 ## Authentik OIDC 流程
 
-1. 未认证的远程访问重定向到 Authentik 登录页（`/auth/oidc/login`）。
+1. 未认证的远程访问先进入网关本地登录页（`/auth/login`）；用户点击登录后才访问 Authentik（`/auth/oidc/login`）。登录页本身不依赖认证服务器在线。
 2. 使用 **Authorization Code + PKCE**，并携带 `state` 与 `nonce`（交易 Cookie
    `lmg_oidc_state`，10 分钟有效）。
 3. 回调 `/auth/oidc/callback` 校验：discovery、issuer、audience、过期时间（含 60s 时钟容差）、

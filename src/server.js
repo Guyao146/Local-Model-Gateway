@@ -18,11 +18,14 @@ const {
   anthropicToOpenAI,
   openAIResponseToAnthropic,
   anthropicResponseToOpenAI,
+  openAIRequestToResponses,
+  responsesResponseToOpenAI,
   responseInputToOpenAI,
   responsesResponseFromOpenAI,
   responsesResponseSkeleton,
   textFromContent,
-  responseRequestRequiresNative
+  responseRequestRequiresNative,
+  chatRequestRequiresNative
 } = require('./protocol');
 const { recordRequest, getMetrics, getLogs, getAllLogs, importUsageRecords, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
@@ -116,6 +119,12 @@ function sendRedirect(res, location, extraHeaders = {}) {
 function validateLocalReturnTo(value) {
   const path = String(value || '/').trim();
   return path.startsWith('/') && !path.startsWith('//') && path.length <= 1000 ? path : '/';
+}
+
+function loginPageUrl(returnTo = '/', error = '') {
+  const params = new URLSearchParams({ returnTo: validateLocalReturnTo(returnTo) });
+  if (error) params.set('error', String(error).slice(0, 500));
+  return `/auth/login?${params}`;
 }
 
 function parsedHostname(host) {
@@ -895,14 +904,24 @@ function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel,
   const modelEntry = modelEntryFor(upstream, model);
   const thinkingLevel = localInput.thinkingLevel || 'auto';
   const inputWithThinking = applyThinkingLevel(localInput, thinkingLevel, upstream, modelEntry);
+  const requiresNative = localProtocol === 'responses'
+    ? responseRequestRequiresNative(inputWithThinking)
+    : localProtocol === 'openai'
+      ? chatRequestRequiresNative(inputWithThinking)
+      : false;
   const nativeResponses = localProtocol === 'responses'
-    && upstream.protocol === 'openai'
-    && upstream.responsesMode !== 'chat'
-    && options.forceChat !== true;
+    ? upstream.protocol === 'openai' && upstream.responsesMode !== 'chat' && options.forceChat !== true
+    : localProtocol === 'openai'
+      && requiresNative
+      && upstream.protocol === 'openai'
+      && upstream.responsesMode !== 'chat'
+      && options.forceChat !== true;
   const openAIInput = localProtocol === 'responses' ? responseInputToOpenAI(inputWithThinking, model) : inputWithThinking;
   let body;
   if (nativeResponses) {
-    body = { ...inputWithThinking, model };
+    body = localProtocol === 'openai'
+      ? openAIRequestToResponses(inputWithThinking, model)
+      : { ...inputWithThinking, model };
   } else if (localProtocol === upstream.protocol) {
     body = { ...inputWithThinking, model };
   } else if (upstream.protocol === 'anthropic') {
@@ -914,7 +933,8 @@ function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel,
     endpoint: resolveEndpoint(upstream.baseUrl, nativeResponses ? '/v1/responses' : upstream.protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'),
     body,
     headers: upstreamHeaders(upstream, requestId, options.requestHeaders),
-    nativeResponses
+    nativeResponses,
+    requiresNative
   };
 }
 
@@ -924,7 +944,7 @@ function responsesNativeUnsupported(status) {
 
 function responsesNativeCapabilityError(upstream) {
   return {
-    message: `上游“${upstream.name}”不支持 Responses API 原生 Agent 工具；请改用支持 /v1/responses 的 OpenAI 上游`,
+    message: `上游“${upstream.name}”不支持此请求所需的 Responses API 原生能力；请启用可用的 /v1/responses，function tools 与 reasoning_effort 组合不能回退到 Chat Completions`,
     type: 'unsupported_agent_capability'
   };
 }
@@ -1281,6 +1301,101 @@ async function openAIStreamAsResponses(response, res, model) {
   return usage;
 }
 
+async function responsesStreamAsOpenAI(response, res, model) {
+  let responseId = `chatcmpl_${crypto.randomBytes(8).toString('hex')}`;
+  let started = false;
+  let stopped = false;
+  let nextToolIndex = 0;
+  let usage;
+  const toolIndexes = new Map();
+  const toolArgumentLengths = new Map();
+  const ensureStarted = () => {
+    if (started) return;
+    started = true;
+    writeSse(res, openAIChunk(model, responseId, { role: 'assistant' }));
+  };
+  const toolKey = (item, parsed) => String(item?.call_id || item?.id || parsed?.item_id || parsed?.output_index || '0');
+  const toolIndex = (key) => {
+    if (!toolIndexes.has(key)) toolIndexes.set(key, nextToolIndex++);
+    return toolIndexes.get(key);
+  };
+  await consumeSse(response, async ({ name, data }) => {
+    if (data === '[DONE]') return;
+    let parsed;
+    try { parsed = JSON.parse(data); } catch { return; }
+    const eventName = name || parsed.type;
+    if (eventName === 'response.created') {
+      responseId = parsed.response?.id || responseId;
+      ensureStarted();
+      return;
+    }
+    if (eventName === 'response.output_text.delta') {
+      ensureStarted();
+      writeSse(res, openAIChunk(model, responseId, { content: parsed.delta || '' }));
+      return;
+    }
+    if (eventName === 'response.output_item.added' && parsed.item?.type === 'function_call') {
+      ensureStarted();
+      const key = toolKey(parsed.item, parsed);
+      const index = toolIndex(key);
+      const initialArguments = typeof parsed.item.arguments === 'string' ? parsed.item.arguments : '';
+      toolArgumentLengths.set(key, initialArguments.length);
+      writeSse(res, openAIChunk(model, responseId, {
+        tool_calls: [{
+          index,
+          id: parsed.item.call_id || parsed.item.id,
+          type: 'function',
+          function: { name: parsed.item.name || '', arguments: initialArguments }
+        }]
+      }));
+      return;
+    }
+    if (eventName === 'response.function_call_arguments.delta') {
+      ensureStarted();
+      const key = toolKey(null, parsed);
+      const index = toolIndex(key);
+      const delta = parsed.delta || '';
+      toolArgumentLengths.set(key, (toolArgumentLengths.get(key) || 0) + delta.length);
+      writeSse(res, openAIChunk(model, responseId, { tool_calls: [{ index, function: { arguments: delta } }] }));
+      return;
+    }
+    if (eventName === 'response.output_item.done' && parsed.item?.type === 'function_call') {
+      ensureStarted();
+      const key = toolKey(parsed.item, parsed);
+      const index = toolIndex(key);
+      const fullArguments = typeof parsed.item.arguments === 'string' ? parsed.item.arguments : '';
+      const sentLength = toolArgumentLengths.get(key) || 0;
+      if (fullArguments.length > sentLength) {
+        writeSse(res, openAIChunk(model, responseId, { tool_calls: [{ index, function: { arguments: fullArguments.slice(sentLength) } }] }));
+        toolArgumentLengths.set(key, fullArguments.length);
+      }
+      return;
+    }
+    if (eventName === 'response.completed' || eventName === 'response.incomplete') {
+      ensureStarted();
+      const responseUsage = parsed.response?.usage || {};
+      const promptTokens = responseUsage.input_tokens || 0;
+      const completionTokens = responseUsage.output_tokens || 0;
+      usage = {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: responseUsage.total_tokens || promptTokens + completionTokens
+      };
+      const finishReason = toolIndexes.size ? 'tool_calls' : (eventName === 'response.incomplete' ? 'length' : 'stop');
+      writeSse(res, openAIChunk(model, responseId, {}, finishReason, usage));
+      writeSse(res, '[DONE]');
+      stopped = true;
+    }
+  });
+  if (!stopped && !res.writableEnded) {
+    ensureStarted();
+    writeSse(res, openAIChunk(model, responseId, {}, toolIndexes.size ? 'tool_calls' : 'stop', usage));
+    writeSse(res, '[DONE]');
+  }
+  if (!res.writableEnded) res.end();
+  return usage;
+}
+
 async function anthropicStreamAsResponses(response, res, model) {
   const responseId = `resp_${crypto.randomBytes(8).toString('hex')}`;
   const messageId = `msg_${crypto.randomBytes(8).toString('hex')}`;
@@ -1370,20 +1485,19 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   let upstream = null;
   let lastError = null;
   let nativeResponses = false;
-  const requiresNativeResponses = localProtocol === 'responses' && responseRequestRequiresNative(input);
 
   for (let index = 0; index < maxAttempts; index += 1) {
     upstream = upstreams[index];
-    if (requiresNativeResponses && (upstream.protocol !== 'openai' || upstream.responsesMode === 'chat')) {
+    const requestInput = routeThinkingLevel === 'auto' && input.thinkingLevel === undefined
+      ? input
+      : { ...input, thinkingLevel: input.thinkingLevel ?? routeThinkingLevel };
+    const requestInfo = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { requestHeaders: req.headers });
+    if (requestInfo.requiresNative && (upstream.protocol !== 'openai' || upstream.responsesMode === 'chat')) {
       upstreamResponse = null;
       attempts.push({ upstream: upstream.name, status: 400 });
       lastError = { status: 400, body: { error: responsesNativeCapabilityError(upstream) } };
       continue;
     }
-    const requestInput = routeThinkingLevel === 'auto' && input.thinkingLevel === undefined
-      ? input
-      : { ...input, thinkingLevel: input.thinkingLevel ?? routeThinkingLevel };
-    const requestInfo = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { requestHeaders: req.headers });
     log('route request', {
       localProtocol,
       model: localModel,
@@ -1401,7 +1515,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
         requestInfo.nativeResponses
         && upstream.responsesMode !== 'native'
         && responsesNativeUnsupported(upstreamResponse.status)
-        && !requiresNativeResponses
+        && !requestInfo.requiresNative
       ) {
         log('upstream does not expose native Responses API, falling back to Chat Completions', {
           upstream: upstream.name,
@@ -1413,7 +1527,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
         nativeResponses = false;
         attempts.push({ upstream: upstream.name, status: upstreamResponse.status, fallback: 'chat_completions' });
       }
-      if (requestInfo.nativeResponses && requiresNativeResponses && responsesNativeUnsupported(upstreamResponse.status)) {
+      if (requestInfo.nativeResponses && requestInfo.requiresNative && responsesNativeUnsupported(upstreamResponse.status)) {
         const unsupportedBody = await readResponseJson(upstreamResponse);
         upstreamResponse = null;
         lastError = {
@@ -1471,7 +1585,9 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     const body = await readResponseJson(upstreamResponse);
     let result;
     if (nativeResponses) {
-      result = { ...body, model: localModel };
+      result = localProtocol === 'openai'
+        ? responsesResponseToOpenAI(body, localModel)
+        : { ...body, model: localModel };
     } else if (localProtocol === upstream.protocol) {
       result = { ...body, model: localModel };
     } else if (localProtocol === 'responses') {
@@ -1498,7 +1614,11 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   });
   try {
     let streamUsage;
-    if (nativeResponses) streamUsage = await pipeRawStream(upstreamResponse, res);
+    if (nativeResponses) {
+      streamUsage = localProtocol === 'openai'
+        ? await responsesStreamAsOpenAI(upstreamResponse, res, localModel)
+        : await pipeRawStream(upstreamResponse, res);
+    }
     else if (localProtocol === upstream.protocol) streamUsage = await pipeRawStream(upstreamResponse, res);
     else if (localProtocol === 'openai') streamUsage = await anthropicStreamAsOpenAI(upstreamResponse, res, localModel);
     else if (localProtocol === 'responses') {
@@ -1808,9 +1928,9 @@ function importConfig(rawConfig, preserveCredentials = true) {
   return publicConfig(config);
 }
 
-function serveStatic(res, pathname) {
-  const fileName = pathname === '/' ? 'index.html' : pathname.slice(1);
-  if (!['index.html', 'app.js', 'model-groups.js', 'styles.css'].includes(fileName)) {
+function serveStatic(res, pathname, fileOverride = '') {
+  const fileName = fileOverride || (pathname === '/' ? 'index.html' : pathname.slice(1));
+  if (!['index.html', 'login.html', 'login.js', 'app.js', 'model-groups.js', 'styles.css'].includes(fileName)) {
     sendText(res, 404, 'Not found');
     return;
   }
@@ -1819,7 +1939,7 @@ function serveStatic(res, pathname) {
     sendText(res, 404, 'Not found');
     return;
   }
-  const types = { 'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'model-groups.js': 'text/javascript; charset=utf-8', 'styles.css': 'text/css; charset=utf-8' };
+  const types = { 'index.html': 'text/html; charset=utf-8', 'login.html': 'text/html; charset=utf-8', 'login.js': 'application/javascript; charset=utf-8', 'app.js': 'application/javascript; charset=utf-8', 'model-groups.js': 'application/javascript; charset=utf-8', 'styles.css': 'text/css; charset=utf-8' };
   sendText(res, 200, fs.readFileSync(filePath, 'utf8'), types[fileName]);
 }
 
@@ -2160,17 +2280,29 @@ async function requestHandler(req, res) {
     }, { 'Cache-Control': 'no-store' });
     return;
   }
-  if (pathname === '/auth/oidc/login' && req.method === 'GET') {
+  if (pathname === '/auth/login' && req.method === 'GET') {
+    const returnTo = validateLocalReturnTo(requestUrl.searchParams.get('returnTo'));
     const access = adminAuth.authenticate(req);
     if (access.ok) {
-      sendRedirect(res, validateLocalReturnTo(requestUrl.searchParams.get('returnTo')));
+      sendRedirect(res, returnTo);
+      return;
+    }
+    serveStatic(res, pathname, 'login.html');
+    return;
+  }
+  if (pathname === '/auth/oidc/login' && req.method === 'GET') {
+    const returnTo = validateLocalReturnTo(requestUrl.searchParams.get('returnTo'));
+    const access = adminAuth.authenticate(req);
+    if (access.ok) {
+      sendRedirect(res, returnTo);
       return;
     }
     try {
-      const login = await adminAuth.beginLogin(requestUrl.searchParams.get('returnTo'));
+      const login = await adminAuth.beginLogin(returnTo);
       sendRedirect(res, login.location, { 'Set-Cookie': login.cookie });
     } catch (error) {
-      sendText(res, error.statusCode || 503, `${error.message}${sourceDiagnosticText(req)}`);
+      log('Authentik login failed', { message: error.message, ...sourceDiagnostics(req) });
+      sendRedirect(res, loginPageUrl(returnTo, error.message));
     }
     return;
   }
@@ -2244,10 +2376,10 @@ async function requestHandler(req, res) {
       const access = adminAuth.authenticate(req);
       if (!access.ok) {
         if (!access.configured) {
-          sendText(res, 503, adminAuth.configurationError());
+          sendRedirect(res, loginPageUrl(`${pathname}${requestUrl.search}`, adminAuth.configurationError()));
           return;
         }
-        sendRedirect(res, `/auth/oidc/login?returnTo=${encodeURIComponent(`${pathname}${requestUrl.search}`)}`);
+        sendRedirect(res, loginPageUrl(`${pathname}${requestUrl.search}`));
         return;
       }
       if (!adminRequestIsSameOrigin(req, access)) {
