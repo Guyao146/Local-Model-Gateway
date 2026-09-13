@@ -551,6 +551,66 @@ function responsesResponseFromOpenAI(input, model) {
   return openAIResponseToResponses(input, model);
 }
 
+function responseId(value, fallback) {
+  if (typeof value === 'string' && value.length > 0) return value;
+  if (value !== undefined && value !== null && typeof value !== 'object') return String(value);
+  return fallback;
+}
+
+function normalizeResponsesResponse(input, model, state) {
+  const source = input && typeof input === 'object' ? input : {};
+  const result = { ...source, model: model || source.model };
+  result.id = responseId(source.id, `resp_${crypto.randomBytes(8).toString('hex')}`);
+  if (Array.isArray(source.output)) {
+    result.output = source.output.map((item, index) => {
+      if (!item || typeof item !== 'object') return item;
+      const itemId = responseId(item.id, state?.itemIds?.[String(index)] || `item_${index}_${crypto.randomBytes(6).toString('hex')}`);
+      const normalized = { ...item, id: itemId };
+      if (item.call_id !== undefined || item.type === 'function_call') {
+        normalized.call_id = responseId(item.call_id, itemId);
+      }
+      return normalized;
+    });
+  }
+  return result;
+}
+
+function normalizeResponsesEvent(input, state = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  const result = { ...source };
+  if (source.type === 'response.created' && source.response && typeof source.response === 'object') {
+    state.responseId = responseId(source.response.id, state.responseId || `resp_${crypto.randomBytes(8).toString('hex')}`);
+    result.response = { ...source.response, id: state.responseId };
+  } else if (source.response && typeof source.response === 'object' && source.response.id !== undefined) {
+    result.response = { ...source.response, id: responseId(source.response.id, state.responseId || `resp_${crypto.randomBytes(8).toString('hex')}`) };
+    state.responseId = result.response.id;
+  }
+  if (source.response_id !== undefined) result.response_id = responseId(source.response_id, state.responseId || `resp_${crypto.randomBytes(8).toString('hex')}`);
+  if (result.response_id) state.responseId = result.response_id;
+
+  if (source.item && typeof source.item === 'object') {
+    const key = source.output_index ?? source.item_id ?? state.nextItemIndex ?? 0;
+    const itemKey = String(key);
+    const itemId = responseId(source.item.id, state.itemIds?.[itemKey] || `item_${itemKey}_${crypto.randomBytes(6).toString('hex')}`);
+    state.itemIds = state.itemIds || {};
+    state.itemIds[itemKey] = itemId;
+    result.item = { ...source.item, id: itemId };
+    if (source.item.call_id !== undefined || source.item.type === 'function_call') result.item.call_id = responseId(source.item.call_id, itemId);
+  }
+  if (source.item_id !== undefined) {
+    const key = String(source.item_id);
+    result.item_id = responseId(source.item_id, state.itemIds?.[key] || `item_${key}`);
+  } else if (source.output_index !== undefined && state.itemIds?.[String(source.output_index)]) {
+    result.item_id = state.itemIds[String(source.output_index)];
+  }
+  if (source.type === 'response.completed' || source.type === 'response.incomplete') {
+    result.response = normalizeResponsesResponse(source.response, source.response?.model || undefined, state);
+    result.response.id = state.responseId || result.response.id;
+    state.responseId = result.response.id;
+  }
+  return result;
+}
+
 function responsesResponseSkeleton(id, model) {
   return {
     id,
@@ -576,6 +636,8 @@ module.exports = {
   openAIResponseToResponses,
   responsesResponseToOpenAI,
   responsesResponseFromOpenAI,
+  normalizeResponsesResponse,
+  normalizeResponsesEvent,
   responsesResponseSkeleton,
   textFromContent,
   responseRequestRequiresNative,

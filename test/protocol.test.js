@@ -10,7 +10,9 @@ const {
   responseInputToOpenAI,
   openAIResponseToResponses,
   responseRequestRequiresNative,
-  chatRequestRequiresNative
+  chatRequestRequiresNative,
+  normalizeResponsesResponse,
+  normalizeResponsesEvent
 } = require('../src/protocol');
 
 assert.equal(resolveEndpoint('https://example.com/v1', '/v1/models'), 'https://example.com/v1/models');
@@ -97,6 +99,22 @@ assert.equal(responseRequestRequiresNative({ model: 'tools', input: 'hello', too
 assert.equal(responseRequestRequiresNative({ model: 'agent', input: 'use the computer', tools: [{ type: 'computer' }] }), true);
 assert.equal(responseRequestRequiresNative({ model: 'agent', previous_response_id: 'resp_previous', input: 'continue' }), true);
 assert.equal(responseRequestRequiresNative({ model: 'agent', input: [{ type: 'computer_call_output', call_id: 'call_1', output: { type: 'computer_screenshot', image_url: 'data:image/png;base64,AA==' } }] }), true);
+
+const normalizedResponse = normalizeResponsesResponse({
+  id: 123,
+  output: [{ type: 'computer_call', id: null }, { type: 'function_call', id: 456, call_id: null }]
+}, 'agent');
+assert.equal(typeof normalizedResponse.id, 'string');
+assert.equal(typeof normalizedResponse.output[0].id, 'string');
+assert.equal(typeof normalizedResponse.output[1].id, 'string');
+assert.equal(typeof normalizedResponse.output[1].call_id, 'string');
+const responseEventState = {};
+const createdEvent = normalizeResponsesEvent({ type: 'response.created', response: { id: null } }, responseEventState);
+const itemEvent = normalizeResponsesEvent({ type: 'response.output_item.added', output_index: 0, item: { type: 'computer_call', id: null } }, responseEventState);
+const completedEvent = normalizeResponsesEvent({ type: 'response.completed', response: { id: null, output: [{ type: 'computer_call', id: null }] } }, responseEventState);
+assert.equal(typeof createdEvent.response.id, 'string');
+assert.equal(completedEvent.response.id, createdEvent.response.id);
+assert.equal(itemEvent.item.id, completedEvent.response.output[0].id);
 
 const responsesResult = openAIResponseToResponses({
   id: 'chat_response',

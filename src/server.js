@@ -23,6 +23,8 @@ const {
   responseInputToOpenAI,
   responsesResponseFromOpenAI,
   responsesResponseSkeleton,
+  normalizeResponsesResponse,
+  normalizeResponsesEvent,
   textFromContent,
   responseRequestRequiresNative,
   chatRequestRequiresNative
@@ -1029,7 +1031,7 @@ async function consumeSse(response, onEvent) {
   if (buffer.trim()) await flush(buffer);
 }
 
-async function pipeRawStream(response, res) {
+async function pipeRawStream(response, res, options = {}) {
   if (!response.body) return;
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -1037,12 +1039,18 @@ async function pipeRawStream(response, res) {
   const usage = {};
   const inspectFrame = (frame) => {
     let data = '';
+    let eventName = '';
     for (const line of frame.split(/\r?\n/)) {
+      if (line.startsWith('event:')) eventName = line.slice(6).trim();
       if (line.startsWith('data:')) data += (data ? '\n' : '') + line.slice(5).trimStart();
     }
     if (!data || data === '[DONE]') return;
     try {
-      const parsed = JSON.parse(data);
+      let parsed = JSON.parse(data);
+      if (options.normalizeResponses) {
+        parsed = normalizeResponsesEvent(parsed, options.state);
+        res.write(`${eventName ? `event: ${eventName}\n` : ''}data: ${JSON.stringify(parsed)}\n\n`);
+      }
       const eventUsage = parsed.usage || parsed.message?.usage;
       if (eventUsage) Object.assign(usage, eventUsage);
     } catch {
@@ -1058,7 +1066,7 @@ async function pipeRawStream(response, res) {
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    res.write(Buffer.from(value));
+    if (!options.normalizeResponses) res.write(Buffer.from(value));
     inspectText(decoder.decode(value, { stream: true }));
   }
   inspectText(decoder.decode());
@@ -1587,7 +1595,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     if (nativeResponses) {
       result = localProtocol === 'openai'
         ? responsesResponseToOpenAI(body, localModel)
-        : { ...body, model: localModel };
+        : normalizeResponsesResponse(body, localModel);
     } else if (localProtocol === upstream.protocol) {
       result = { ...body, model: localModel };
     } else if (localProtocol === 'responses') {
@@ -1617,7 +1625,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     if (nativeResponses) {
       streamUsage = localProtocol === 'openai'
         ? await responsesStreamAsOpenAI(upstreamResponse, res, localModel)
-        : await pipeRawStream(upstreamResponse, res);
+        : await pipeRawStream(upstreamResponse, res, { normalizeResponses: true, state: {} });
     }
     else if (localProtocol === upstream.protocol) streamUsage = await pipeRawStream(upstreamResponse, res);
     else if (localProtocol === 'openai') streamUsage = await anthropicStreamAsOpenAI(upstreamResponse, res, localModel);
