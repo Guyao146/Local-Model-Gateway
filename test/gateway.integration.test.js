@@ -50,6 +50,7 @@ function waitForOutput(process, text) {
 async function main() {
   const observedRequestIds = [];
   const observedBalanceAuth = [];
+  const observedFallbackBodies = [];
   let slowStartedResolve;
   const slowStarted = new Promise((resolve) => { slowStartedResolve = resolve; });
   const primary = http.createServer(async (req, res) => {
@@ -97,6 +98,7 @@ async function main() {
     }
     if (req.url === '/v1/chat/completions') {
       const body = JSON.parse(raw);
+      observedFallbackBodies.push(body);
       if (raw.includes('slow-concurrency-test')) {
         slowStartedResolve();
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -317,6 +319,38 @@ async function main() {
       { upstream: 'fallback', value: 'weighted-request-002' },
       { upstream: 'primary', value: 'weighted-request-003' }
     ]);
+    const stripRoute = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/routes`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ localModel: 'thinking-off-local', upstreamId: fallbackResult.body.id, upstreamModel: 'test-model', fallbackUpstreamIds: [], strategy: 'failover', thinkingLevel: 'off' })
+    });
+    assert.equal(stripRoute.status, 201, JSON.stringify(stripRoute.body));
+    const noThinkingUpstream = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ name: 'no-thinking', baseUrl: `http://127.0.0.1:${fallbackPort}/v1`, protocol: 'openai', authType: 'none', apiKey: '', models: 'no-thinking-model', modelCatalog: [{ id: 'no-thinking-model', supportsThinking: false }] })
+    });
+    assert.equal(noThinkingUpstream.status, 201, JSON.stringify(noThinkingUpstream.body));
+    const noThinkingRoute = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/routes`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ localModel: 'no-thinking-local', upstreamId: noThinkingUpstream.body.id, upstreamModel: 'no-thinking-model', fallbackUpstreamIds: [], strategy: 'failover', thinkingLevel: 'auto' })
+    });
+    assert.equal(noThinkingRoute.status, 201, JSON.stringify(noThinkingRoute.body));
+    const beforeStrip = observedFallbackBodies.length;
+    const stripResult = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST', headers: { Authorization: `Bearer ${config.localApiKeys[0].key}` }, body: JSON.stringify({ model: 'thinking-off-local', messages: [{ role: 'user', content: 'strip-reasoning-off' }], reasoning_effort: 'high' })
+    });
+    assert.equal(stripResult.status, 200, JSON.stringify(stripResult.body));
+    const noThinkingResult = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST', headers: { Authorization: `Bearer ${config.localApiKeys[0].key}` }, body: JSON.stringify({ model: 'no-thinking-local', messages: [{ role: 'user', content: 'strip-reasoning-capability' }], reasoning_effort: 'high' })
+    });
+    assert.equal(noThinkingResult.status, 200, JSON.stringify(noThinkingResult.body));
+    const strippedBodies = observedFallbackBodies.slice(beforeStrip);
+    assert.equal(strippedBodies.length, 2, JSON.stringify(strippedBodies));
+    for (const strippedBody of strippedBodies) {
+      assert.equal(strippedBody.reasoning_effort, undefined, '不支持思考的模型应剥离客户端显式传入的 reasoning_effort');
+    }
     const strategyMetrics = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics`, { headers: adminHeaders });
     assert.equal(strategyMetrics.status, 200, JSON.stringify(strategyMetrics.body));
     assert.equal(strategyMetrics.body.logs.find((entry) => entry.model === 'round-robin-local').strategy, 'round_robin');

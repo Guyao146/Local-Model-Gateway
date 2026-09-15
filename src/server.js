@@ -25,6 +25,7 @@ const {
   responsesResponseSkeleton,
   normalizeResponsesResponse,
   normalizeResponsesEvent,
+  normalizeResponsesIds,
   textFromContent,
   responseRequestRequiresNative,
   chatRequestRequiresNative
@@ -621,8 +622,16 @@ function applyThinkingLevel(input, thinkingLevel, upstream, modelEntry) {
   const result = { ...(input || {}) };
   delete result.thinkingLevel;
   const level = normalizeThinkingLevel(thinkingLevel, 'auto');
+  if (level === 'off' || modelEntry?.supportsThinking === false) {
+    // 明确关闭思考，或模型被判定为不支持思考时，即使客户端显式传入也一并剥离，
+    // 避免上游以“Unsupported parameter: reasoning_effort”拒绝请求。
+    delete result.reasoning_effort;
+    delete result.reasoning;
+    delete result.thinking;
+    return result;
+  }
   const hasExplicitThinking = result.reasoning_effort !== undefined || result.reasoning !== undefined || result.thinking !== undefined;
-  if (hasExplicitThinking || level === 'auto' || level === 'client' || level === 'off' || modelEntry?.supportsThinking === false) return result;
+  if (hasExplicitThinking || level === 'auto' || level === 'client') return result;
   if (upstream.protocol === 'anthropic') {
     result.thinking = { type: 'enabled', budget_tokens: THINKING_BUDGETS[level] || THINKING_BUDGETS.medium };
     const minimumMaxTokens = result.thinking.budget_tokens + 1024;
@@ -924,6 +933,7 @@ function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel,
     body = localProtocol === 'openai'
       ? openAIRequestToResponses(inputWithThinking, model)
       : { ...inputWithThinking, model };
+    body = normalizeResponsesIds(body);
   } else if (localProtocol === upstream.protocol) {
     body = { ...inputWithThinking, model };
   } else if (upstream.protocol === 'anthropic') {

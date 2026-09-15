@@ -12,7 +12,8 @@ const {
   responseRequestRequiresNative,
   chatRequestRequiresNative,
   normalizeResponsesResponse,
-  normalizeResponsesEvent
+  normalizeResponsesEvent,
+  normalizeResponsesIds
 } = require('../src/protocol');
 
 assert.equal(resolveEndpoint('https://example.com/v1', '/v1/models'), 'https://example.com/v1/models');
@@ -108,6 +109,25 @@ assert.equal(typeof normalizedResponse.id, 'string');
 assert.equal(typeof normalizedResponse.output[0].id, 'string');
 assert.equal(typeof normalizedResponse.output[1].id, 'string');
 assert.equal(typeof normalizedResponse.output[1].call_id, 'string');
+const normalizedPayload = normalizeResponsesIds({ input: [{ id: null, call_id: 42, nested: { item_id: 7 } }] });
+assert.equal(typeof normalizedPayload.input[0].id, 'string');
+assert.equal(typeof normalizedPayload.input[0].call_id, 'string');
+assert.equal(typeof normalizedPayload.input[0].nested.item_id, 'string');
+const deepEventState = {};
+const deepItemEvent = normalizeResponsesEvent({ type: 'response.output_item.added', output_index: 2, item: { type: 'function_call', id: null, call_id: 91, arguments: [{ item_id: null }] } }, deepEventState);
+assert.equal(typeof deepItemEvent.item.id, 'string');
+assert.equal(typeof deepItemEvent.item.call_id, 'string');
+assert.equal(typeof deepItemEvent.item.arguments[0].item_id, 'string');
+const upstreamRequest = normalizeResponsesIds({
+  model: 'gpt-native',
+  input: [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }], id: null },
+    { type: 'function_call', id: 77, call_id: null }
+  ]
+});
+assert.equal(typeof upstreamRequest.input[0].id, 'string');
+assert.equal(typeof upstreamRequest.input[1].id, 'string');
+assert.equal(typeof upstreamRequest.input[1].call_id, 'string');
 const responseEventState = {};
 const createdEvent = normalizeResponsesEvent({ type: 'response.created', response: { id: null } }, responseEventState);
 const itemEvent = normalizeResponsesEvent({ type: 'response.output_item.added', output_index: 0, item: { type: 'computer_call', id: null } }, responseEventState);

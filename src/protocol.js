@@ -572,6 +572,20 @@ function normalizeResponsesResponse(input, model, state) {
       return normalized;
     });
   }
+  return normalizeResponsesIds(result, state);
+}
+
+function normalizeResponsesIds(value, state = {}, path = 'responses') {
+  if (Array.isArray(value)) return value.map((item, index) => normalizeResponsesIds(item, state, `${path}.${index}`));
+  if (!value || typeof value !== 'object') return value;
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (['id', 'call_id', 'item_id', 'response_id', 'previous_response_id'].includes(key)) {
+      result[key] = responseId(item, `${key}_${crypto.createHash('sha256').update(`${path}.${key}`).digest('hex').slice(0, 16)}`);
+    } else {
+      result[key] = normalizeResponsesIds(item, state, `${path}.${key}`);
+    }
+  }
   return result;
 }
 
@@ -608,7 +622,7 @@ function normalizeResponsesEvent(input, state = {}) {
     result.response.id = state.responseId || result.response.id;
     state.responseId = result.response.id;
   }
-  return result;
+  return normalizeResponsesIds(result, state);
 }
 
 function responsesResponseSkeleton(id, model) {
@@ -638,6 +652,7 @@ module.exports = {
   responsesResponseFromOpenAI,
   normalizeResponsesResponse,
   normalizeResponsesEvent,
+  normalizeResponsesIds,
   responsesResponseSkeleton,
   textFromContent,
   responseRequestRequiresNative,
