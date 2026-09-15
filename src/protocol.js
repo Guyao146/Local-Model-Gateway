@@ -434,7 +434,7 @@ function responseInputToOpenAI(input, model) {
     if (item.type === 'function_call_output') {
       result.messages.push({
         role: 'tool',
-        tool_call_id: item.call_id || item.id,
+        tool_call_id: responseId(item.call_id ?? item.id, `call_${crypto.randomBytes(8).toString('hex')}`),
         content: textFromContent(item.output)
       });
       continue;
@@ -442,10 +442,11 @@ function responseInputToOpenAI(input, model) {
     if (item.type === 'function_call') {
       let argumentsValue = item.arguments || '{}';
       if (typeof argumentsValue !== 'string') argumentsValue = JSON.stringify(argumentsValue);
+      const callId = responseId(item.call_id ?? item.id, `call_${crypto.randomBytes(8).toString('hex')}`);
       result.messages.push({
         role: 'assistant',
         content: null,
-        tool_calls: [{ id: item.call_id || item.id, type: 'function', function: { name: item.name, arguments: argumentsValue } }]
+        tool_calls: [{ id: callId, type: 'function', function: { name: item.name, arguments: argumentsValue } }]
       });
       continue;
     }
@@ -473,10 +474,13 @@ function openAIResponseToResponses(input, model) {
     content.push({ type: 'output_text', text: textFromContent(message.content), annotations: [] });
   }
   for (const call of message.tool_calls || []) {
+    // 上游偶尔返回 null/数字/对象形式的 tool call id；Responses 客户端严格要求字符串，
+    // 缺失时统一回填确定性 id，避免 “Expected 'id' to be a string”。
+    const callId = responseId(call.id, `call_${crypto.randomBytes(8).toString('hex')}`);
     content.push({
       type: 'function_call',
-      id: call.id,
-      call_id: call.id,
+      id: callId,
+      call_id: callId,
       name: call.function?.name,
       arguments: call.function?.arguments || ''
     });
@@ -497,7 +501,12 @@ function openAIResponseToResponses(input, model) {
     total_tokens: input.usage?.total_tokens || (input.usage?.prompt_tokens || 0) + (input.usage?.completion_tokens || 0)
   };
   return {
-    id: input.id ? `resp_${input.id.replace(/^(resp_)+/, '')}` : `resp_${crypto.randomBytes(8).toString('hex')}`,
+    // input.id 可能是 null/数字/对象（部分 OpenAI 兼容站点），先归一为字符串再拼接，
+    // 否则 input.id.replace 会直接抛出 TypeError 并让整个请求以 500 失败。
+    id: (() => {
+      const normalized = responseId(input.id, '');
+      return normalized ? `resp_${normalized.replace(/^(resp_)+/, '')}` : `resp_${crypto.randomBytes(8).toString('hex')}`;
+    })(),
     object: 'response',
     created_at: input.created || Math.floor(Date.now() / 1000),
     status: 'completed',
@@ -520,7 +529,7 @@ function responsesResponseToOpenAI(input, model) {
     }
     if (item?.type === 'function_call') {
       toolCalls.push({
-        id: item.call_id || item.id,
+        id: responseId(item.call_id ?? item.id, `call_${crypto.randomBytes(8).toString('hex')}`),
         type: 'function',
         function: { name: item.name, arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments || {}) }
       });
@@ -530,7 +539,7 @@ function responsesResponseToOpenAI(input, model) {
   const outputTokens = input?.usage?.output_tokens || 0;
   const finishReason = toolCalls.length ? 'tool_calls' : (input?.status === 'incomplete' ? 'length' : 'stop');
   return {
-    id: input?.id || `chatcmpl_${crypto.randomBytes(8).toString('hex')}`,
+    id: responseId(input?.id, `chatcmpl_${crypto.randomBytes(8).toString('hex')}`),
     object: 'chat.completion',
     created: input?.created_at || Math.floor(Date.now() / 1000),
     model,

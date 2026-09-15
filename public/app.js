@@ -550,7 +550,14 @@ const STRATEGY_LABELS = { failover: '故障转移', round_robin: '轮询', weigh
 
 function renderLogRow(entry) {
   const errorTitle = entry.error ? ` title="${escapeHtml(entry.error)}"` : '';
-  return `<tr><td><code>${escapeHtml(entry.id || '-')}</code></td><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td><code>${escapeHtml(entry.model)}</code></td><td>${escapeHtml(STRATEGY_LABELS[entry.strategy] || entry.strategy || '故障转移')}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="${entry.success ? 'success-text' : 'error-text'}"${errorTitle}>${entry.success ? '成功' : `失败：${escapeHtml(entry.error || '未知错误')}`}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`;
+  const protocol = { openai: 'Chat', anthropic: 'Messages', responses: 'Responses' }[entry.protocol] || entry.protocol || '-';
+  const model = entry.upstreamModel && entry.upstreamModel !== entry.model
+    ? `<code>${escapeHtml(entry.model)}</code><span class="log-detail">→ ${escapeHtml(entry.upstreamModel)}</span>`
+    : `<code>${escapeHtml(entry.model || '-')}</code>`;
+  const attempts = (entry.attempts || []).map((attempt) => `${attempt.upstream} (${attempt.status ?? '连接失败'})`).join(' → ');
+  const strategy = escapeHtml(STRATEGY_LABELS[entry.strategy] || entry.strategy || '故障转移');
+  const attemptDetail = attempts ? `<span class="log-detail" title="${escapeHtml(attempts)}">${escapeHtml(attempts)}</span>` : '';
+  return `<tr><td><code>${escapeHtml(entry.id || '-')}</code></td><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td>${escapeHtml(protocol)}${entry.stream ? '<span class="small-tag">流式</span>' : ''}</td><td>${model}</td><td>${strategy}${attemptDetail}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="log-result ${entry.success ? 'success-text' : 'error-text'}"${errorTitle}>${entry.success ? '成功' : `失败：${escapeHtml(entry.error || '未知错误')}`}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`;
 }
 
 function updateLogSummary() {
@@ -584,6 +591,23 @@ async function loadMoreLogs() {
   }
 }
 
+async function refreshRequestLogs() {
+  const button = $('#refreshLogsButton');
+  if (button) { button.disabled = true; button.textContent = '刷新中…'; }
+  try {
+    const page = await api('/api/admin/metrics/logs?offset=0&limit=100');
+    const items = page.items || [];
+    $('#requestLogBody').innerHTML = items.map(renderLogRow).join('');
+    $('#metricsEmpty').classList.toggle('hidden', items.length > 0);
+    state.logPage = page;
+    updateLogSummary();
+  } catch (error) {
+    toast(`刷新请求日志失败：${error.message}`, 'error');
+  } finally {
+    if (button) { button.disabled = false; button.textContent = '刷新日志'; }
+  }
+}
+
 async function loadConfig() {
   setMessage('正在读取配置…');
   try {
@@ -612,7 +636,7 @@ async function loadConfig() {
       state.modelSelectionDraft = null;
     }
     $('#dashboard').classList.remove('hidden');
-    setMessage('配置已载入。', 'success');
+    setMessage('');
     render();
     switchTab(state.activeTab || 'overview');
   } catch (error) {
@@ -627,24 +651,18 @@ async function initializeAdminAccess() {
     const status = await response.json().catch(() => ({}));
     if (!response.ok || !status.authenticated) {
       $('#adminIdentity').textContent = '尚未认证';
-      $('#authModeLabel').textContent = status.error?.message || '需要 Authentik 登录';
       setMessage(status.error?.message || `认证状态检查失败（${response.status}）`, 'error');
       return;
     }
     if (status.mode === 'local') {
       $('#adminIdentity').textContent = '本机管理员';
-      $('#authModeLabel').textContent = '本机回环访问 · 无需认证';
-      $('#logoutButton').classList.add('hidden');
     } else {
-      const identity = status.user?.name || status.user?.username || status.user?.email || 'Authentik 用户';
+      const identity = status.user?.username || status.user?.name || status.user?.email || 'Authentik 用户';
       $('#adminIdentity').textContent = identity;
-      $('#authModeLabel').textContent = `Authentik 已认证 · ${status.user?.username || identity}`;
-      $('#logoutButton').classList.remove('hidden');
     }
     await loadConfig();
   } catch (error) {
     $('#adminIdentity').textContent = '认证状态不可用';
-    $('#authModeLabel').textContent = '无法连接管理认证接口';
     setMessage(error.message, 'error');
   }
 }
@@ -1075,6 +1093,7 @@ $('#upstreamList').addEventListener('click', handleListClick);
 $('#routeList').addEventListener('click', handleListClick);
 $('#keyList').addEventListener('click', handleListClick);
 $('#clearMetricsButton').addEventListener('click', clearMetrics);
+$('#refreshLogsButton').addEventListener('click', refreshRequestLogs);
 $('#loadMoreLogsButton').addEventListener('click', loadMoreLogs);
 $('#exportRecentUsageButton').addEventListener('click', () => exportUsage('recent'));
 $('#exportAllUsageButton').addEventListener('click', () => exportUsage('all'));

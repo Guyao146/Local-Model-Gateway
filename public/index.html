@@ -33,7 +33,10 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="models">本地模型选择</button>
           </div>
           <div class="tab-group"><span class="tab-group-title">访问控制</span><button type="button" class="tab" role="tab" aria-selected="false" data-tab="keys">本地调用 Key</button></div>
-          <div class="tab-group"><span class="tab-group-title">监控统计</span><button type="button" class="tab" role="tab" aria-selected="false" data-tab="metrics">请求统计</button></div>
+          <div class="tab-group"><span class="tab-group-title">监控统计</span>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="metrics">请求统计</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="logs">请求日志</button>
+          </div>
           <div class="tab-group"><span class="tab-group-title">系统</span>
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="settings">可靠性设置</button>
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="backup">配置备份</button>
@@ -43,23 +46,17 @@
       </aside>
 
       <div class="content">
-        <section class="panel auth-panel">
-      <div class="panel-heading">
-        <div><span class="section-number">01</span><h2>管理身份</h2></div>
-        <span id="authModeLabel" class="muted">正在识别访问来源…</span>
-      </div>
-      <div class="inline-form">
-        <div class="grow"><strong id="adminIdentity">正在检查认证状态</strong><div class="help">本地访问无需认证；远程会话由 Authentik 管理。</div></div>
-        <button id="loadButton" class="button primary">重新载入</button>
-        <button id="logoutButton" class="button danger-outline hidden">退出登录</button>
-      </div>
-      <div id="authMessage" class="form-message"></div>
-    </section>
+        <div class="admin-toolbar">
+          <strong id="adminIdentity">正在检查认证状态</strong>
+          <button id="loadButton" class="button secondary">重新载入</button>
+          <button id="logoutButton" class="button danger-outline">退出登录</button>
+        </div>
+        <div id="authMessage" class="form-message admin-message"></div>
 
         <div id="dashboard" class="dashboard hidden">
           <section class="panel dashboard-card" data-panel-id="upstreams" data-tab-page="upstreams">
         <div class="panel-heading">
-          <div><span class="section-number">02</span><h2>上游站点</h2></div>
+          <div><h2>上游站点</h2></div>
           <div class="panel-actions"><button id="queryAllBalancesButton" class="button secondary">查询全部余额</button><button id="addUpstreamButton" class="button primary">＋ 添加上游</button></div>
         </div>
         <p class="help">OpenAI 兼容协议适用于 sub2api / newapi 常见接口；Anthropic 协议会使用 <code>/v1/messages</code>。可测试连接、查询余额，并查看上游熔断状态。余额查询不会影响熔断状态。</p>
@@ -68,7 +65,7 @@
 
           <section class="panel dashboard-card" data-panel-id="routes" data-tab-page="routes">
         <div class="panel-heading">
-          <div><span class="section-number">03</span><h2>模型路由</h2></div>
+          <div><h2>模型路由</h2></div>
           <button id="addRouteButton" class="button primary">＋ 添加路由</button>
         </div>
         <p class="help">精确匹配优先；也可以把本地模型名写为 <code>*</code> 作为兜底路由。只有一个上游时可不配路由。</p>
@@ -77,7 +74,7 @@
 
           <section class="panel model-catalog-panel dashboard-card" data-panel-id="models" data-tab-page="models">
         <div class="panel-heading">
-          <div><span class="section-number">04</span><h2>本地模型选择</h2></div>
+          <div><h2>本地模型选择</h2></div>
           <div class="panel-actions"><button id="syncAllModelsButton" class="button secondary">拉取全部模型</button><button id="saveModelSelectionsButton" class="button primary">保存勾选</button></div>
         </div>
         <p class="help">相同模型 ID 会合并成一项，并按 ID 前缀分组。每个模型可选择“自动选择”全部同名来源站，也可在下拉框中固定某一个站；自动模式会轮询健康站点，并在连接失败、429、5xx 或熔断时切换。可以设置本地别名和默认思考强度。</p>
@@ -88,7 +85,7 @@
 
           <section class="panel dashboard-card" data-panel-id="keys" data-tab-page="keys">
         <div class="panel-heading">
-          <div><span class="section-number">05</span><h2>本地调用 Key</h2></div>
+          <div><h2>本地调用 Key</h2></div>
           <button id="addKeyButton" class="button primary">＋ 新建 Key</button>
         </div>
         <p class="help">本地 APP 调用时使用这里的 Key。完整 Key 可直接查看和复制；请求头可用 <code>Authorization: Bearer ...</code> 或 <code>x-api-key: ...</code>。</p>
@@ -97,7 +94,7 @@
 
           <section class="panel settings-panel dashboard-card" data-panel-id="settings" data-tab-page="settings">
         <div class="panel-heading">
-          <div><span class="section-number">06</span><h2>可靠性设置</h2></div>
+          <div><h2>可靠性设置</h2></div>
           <button id="saveSettingsButton" class="button primary">保存设置</button>
         </div>
         <p class="help">控制上游请求等待时间和故障转移行为。最大备用尝试次数为 0 时表示不限制，设置修改立即保存。</p>
@@ -115,21 +112,29 @@
 
           <section class="panel endpoint-panel dashboard-card" data-panel-id="metrics" data-tab-page="metrics">
         <div class="panel-heading">
-          <div><span class="section-number">07</span><h2>请求统计</h2></div>
+          <div><h2>请求统计</h2></div>
           <div class="panel-actions"><button id="exportRecentUsageButton" class="button secondary">导出近 100 条</button><button id="exportAllUsageButton" class="button secondary">导出全部用量</button><button id="importUsageButton" class="button secondary">导入用量</button><input id="usageFileInput" type="file" accept="application/json,.json" hidden><button id="clearMetricsButton" class="button danger-outline">清空统计</button></div>
         </div>
         <div class="stats-grid" id="statsGrid"></div>
         <div class="subheading-row"><h3>按上游统计</h3><span class="muted">每 5 秒自动刷新</span></div>
         <div id="upstreamStats" class="upstream-stats"></div>
+      </section>
+
+          <section class="panel endpoint-panel dashboard-card" data-panel-id="logs" data-tab-page="logs">
+        <div class="panel-heading">
+          <div><h2>请求日志</h2></div>
+          <button id="refreshLogsButton" type="button" class="button secondary">刷新日志</button>
+        </div>
+        <p class="help">仅记录请求元数据，不保存请求正文、请求头、API Key 或上游完整地址。失败时可根据请求 ID、上游尝试和错误信息定位问题。</p>
         <div class="subheading-row"><h3>最近请求</h3><span id="requestLogSummary" class="muted">仅记录元数据</span></div>
-        <div class="table-wrap"><table><thead><tr><th>请求 ID</th><th>时间</th><th>模型</th><th>策略</th><th>上游</th><th>状态</th><th>耗时</th><th>Token</th><th>结果 / 错误</th></tr></thead><tbody id="requestLogBody"></tbody></table></div>
+        <div class="table-wrap request-log-table"><table><thead><tr><th>请求 ID</th><th>时间</th><th>协议</th><th>模型 / 上游模型</th><th>策略 / 尝试</th><th>上游</th><th>状态</th><th>耗时</th><th>Token</th><th>结果 / 错误</th></tr></thead><tbody id="requestLogBody"></tbody></table></div>
         <div id="metricsEmpty" class="empty hidden">还没有请求记录。</div>
         <div id="requestLogMore" class="log-more hidden"><button id="loadMoreLogsButton" type="button" class="button secondary">加载更多</button></div>
       </section>
 
           <section class="panel endpoint-panel dashboard-card" data-panel-id="backup" data-tab-page="backup">
         <div class="panel-heading">
-          <div><span class="section-number">08</span><h2>配置备份</h2></div>
+          <div><h2>配置备份</h2></div>
           <div class="panel-actions"><button id="exportConfigButton" class="button secondary">导出配置</button><button id="importConfigButton" class="button primary">导入配置</button><input id="configFileInput" type="file" accept="application/json,.json" hidden></div>
         </div>
         <p class="help">导出文件包含本地 Key、上游 API Key 和旧版兼容字段，请只保存到安全位置。导入默认保留本机当前凭据。</p>
@@ -137,7 +142,7 @@
 
           <section class="panel endpoint-panel dashboard-card" data-panel-id="endpoints" data-tab-page="overview">
         <div class="panel-heading">
-          <div><span class="section-number">09</span><h2>本地接口</h2></div>
+          <div><h2>本地接口</h2></div>
         </div>
         <div class="endpoint-grid">
           <div><span>OpenAI Base URL</span><code id="openaiEndpoint"></code></div>
@@ -148,7 +153,7 @@
 
           <section class="panel endpoint-panel dashboard-card" data-panel-id="updates" data-tab-page="overview">
         <div class="panel-heading">
-          <div><span class="section-number">10</span><h2>版本与升级</h2></div>
+          <div><h2>版本与升级</h2></div>
           <button id="checkUpdateButton" type="button" class="button secondary">检查更新</button>
         </div>
         <div id="updateStatus" class="update-status"><span>当前版本：<code id="currentVersion">读取中…</code></span><span id="updateMessage" class="muted">尚未检查</span></div>

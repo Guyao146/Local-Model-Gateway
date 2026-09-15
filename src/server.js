@@ -1612,7 +1612,9 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
       const openAIResult = upstream.protocol === 'anthropic'
         ? anthropicResponseToOpenAI(body, localModel)
         : { ...body, model: localModel };
-      result = responsesResponseFromOpenAI(openAIResult, localModel);
+      // Chat Completions 回退成 Responses 时，上游 id 同样可能是 null/数字/对象，
+      // 这里再过一遍递归规范化，确保客户端不会收到非字符串 id。
+      result = normalizeResponsesIds(responsesResponseFromOpenAI(openAIResult, localModel));
     } else if (localProtocol === 'openai') {
       result = anthropicResponseToOpenAI(body, localModel);
     } else {

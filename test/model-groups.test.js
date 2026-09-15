@@ -105,6 +105,7 @@ assert.ok(appSource.includes('自动选择（${model.providers.length} 个站）
 assert.equal(appSource.includes('data-action="toggle-provider"'), false, '模型目录不应再按上游重复分组');
 assert.ok(appSource.includes('data-action="pool-provider"'), '自动选择应支持勾选参与轮询的上游站点');
 assert.ok(appSource.includes('/api/admin/metrics/logs'), '应支持分页加载请求日志');
+assert.ok(appSource.includes('refreshRequestLogs'), '应支持手动刷新独立请求日志页面');
 assert.ok(appSource.includes('/api/admin/metrics/export?scope='), '应支持导出近 100 条和全部用量记录');
 assert.ok(appSource.includes('provider-priority'), '模型应支持调整来源站使用优先级');
 assert.ok(appSource.includes("event.key === 'F5'"), '管理页面应支持 F5 刷新');

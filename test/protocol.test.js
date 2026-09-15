@@ -147,4 +147,46 @@ assert.equal(responsesResult.output_text, 'Hello responses');
 assert.equal(responsesResult.usage.total_tokens, 11);
 assert.equal(responsesResult.output[0].content[0].type, 'output_text');
 
+// 上游返回数字 id 时不能抛出 TypeError（否则整个请求会以 500 失败，表现为 “Inference request failed.”）。
+const numericIdResult = openAIResponseToResponses({
+  id: 12345,
+  created: 124,
+  choices: [{ message: { role: 'assistant', content: 'numeric id' }, finish_reason: 'stop' }],
+  usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }
+}, 'responses-local');
+assert.equal(typeof numericIdResult.id, 'string');
+assert.equal(numericIdResult.id, 'resp_12345');
+assert.equal(numericIdResult.output_text, 'numeric id');
+
+// 上游 tool call id 为 null 时必须回填字符串，否则 Responses 客户端报 “Expected 'id' to be a string.”。
+const nullToolIdResult = openAIResponseToResponses({
+  id: null,
+  created: 125,
+  choices: [{
+    message: {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{ id: null, type: 'function', function: { name: 'weather', arguments: '{"city":"x"}' } }]
+    },
+    finish_reason: 'tool_calls'
+  }],
+  usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 }
+}, 'responses-local');
+assert.equal(typeof nullToolIdResult.id, 'string');
+const nullToolCall = nullToolIdResult.output[0].content.find((part) => part.type === 'function_call');
+assert.equal(typeof nullToolCall.id, 'string');
+assert.equal(typeof nullToolCall.call_id, 'string');
+assert.equal(nullToolCall.id, nullToolCall.call_id);
+assert.equal(nullToolCall.name, 'weather');
+
+// 回退路径（Responses -> Chat Completions）中的 id 同样需要归一化。
+const fallbackChatResult = responsesResponseToOpenAI({
+  id: null,
+  output: [{ type: 'function_call', id: null, call_id: 88, name: 'weather', arguments: '{"city":"x"}' }],
+  usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+}, 'chat-local');
+assert.equal(typeof fallbackChatResult.id, 'string');
+assert.equal(typeof fallbackChatResult.choices[0].message.tool_calls[0].id, 'string');
+assert.equal(fallbackChatResult.choices[0].message.tool_calls[0].id, '88');
+
 console.log('protocol tests passed');
