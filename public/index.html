@@ -14,7 +14,14 @@
         <h1>本地模型网关</h1>
         <p class="subtitle">统一管理上游站点，把 OpenAI / Claude 请求路由到你的模型服务。</p>
       </div>
-      <div class="status-pill"><span class="status-dot"></span><span id="healthText">检查服务中</span></div>
+      <div class="topbar-side">
+        <div class="admin-toolbar">
+          <strong id="adminIdentity">正在检查认证状态</strong>
+          <button id="loadButton" class="button secondary">重新载入</button>
+          <button id="logoutButton" class="button danger-outline">退出登录</button>
+        </div>
+        <div class="status-pill"><span class="status-dot"></span><span id="healthText">检查服务中</span></div>
+      </div>
     </header>
 
     <section class="notice">
@@ -42,15 +49,10 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="backup">配置备份</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.0.0</strong></div>
+        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.0.2</strong></div>
       </aside>
 
       <div class="content">
-        <div class="admin-toolbar">
-          <strong id="adminIdentity">正在检查认证状态</strong>
-          <button id="loadButton" class="button secondary">重新载入</button>
-          <button id="logoutButton" class="button danger-outline">退出登录</button>
-        </div>
         <div id="authMessage" class="form-message admin-message"></div>
 
         <div id="dashboard" class="dashboard hidden">

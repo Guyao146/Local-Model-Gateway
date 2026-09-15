@@ -76,6 +76,11 @@ function switchTab(tab) {
     button.setAttribute('aria-selected', String(selected));
   }
   try { localStorage.setItem(ACTIVE_TAB_KEY, target); } catch { /* persistence is best-effort */ }
+  // 切到请求日志页时主动拉取最新日志；5 秒自动刷新使用 preserveLogs，不会更新该表格。
+  // 仅在面板已解锁时加载，避免页面初始恢复标签时触发未认证请求。
+  if (target === 'logs' && !$('#dashboard').classList.contains('hidden') && typeof refreshRequestLogs === 'function') {
+    refreshRequestLogs();
+  }
 }
 
 function restoreActiveTab() {
