@@ -22,7 +22,28 @@
       <span>本机回环访问自动放行；远程管理访问必须通过 Authentik OIDC 登录。模型调用接口仍使用本地 API Key。</span>
     </section>
 
-    <section class="panel auth-panel">
+    <div class="admin-layout">
+      <aside class="sidebar">
+        <div class="sidebar-title">功能导航</div>
+        <nav class="tabs" role="tablist">
+          <div class="tab-group"><span class="tab-group-title">总览</span><button type="button" class="tab active" role="tab" aria-selected="true" data-tab="overview">概览</button></div>
+          <div class="tab-group"><span class="tab-group-title">路由配置</span>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="upstreams">上游站点</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="routes">模型路由</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="models">本地模型选择</button>
+          </div>
+          <div class="tab-group"><span class="tab-group-title">访问控制</span><button type="button" class="tab" role="tab" aria-selected="false" data-tab="keys">本地调用 Key</button></div>
+          <div class="tab-group"><span class="tab-group-title">监控统计</span><button type="button" class="tab" role="tab" aria-selected="false" data-tab="metrics">请求统计</button></div>
+          <div class="tab-group"><span class="tab-group-title">系统</span>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="settings">可靠性设置</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="backup">配置备份</button>
+          </div>
+        </nav>
+        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.0.0</strong></div>
+      </aside>
+
+      <div class="content">
+        <section class="panel auth-panel">
       <div class="panel-heading">
         <div><span class="section-number">01</span><h2>管理身份</h2></div>
         <span id="authModeLabel" class="muted">正在识别访问来源…</span>
@@ -35,8 +56,8 @@
       <div id="authMessage" class="form-message"></div>
     </section>
 
-    <div id="dashboard" class="dashboard hidden">
-      <section class="panel dashboard-card" data-panel-id="upstreams">
+        <div id="dashboard" class="dashboard hidden">
+          <section class="panel dashboard-card" data-panel-id="upstreams" data-tab-page="upstreams">
         <div class="panel-heading">
           <div><span class="section-number">02</span><h2>上游站点</h2></div>
           <div class="panel-actions"><button id="queryAllBalancesButton" class="button secondary">查询全部余额</button><button id="addUpstreamButton" class="button primary">＋ 添加上游</button></div>
@@ -45,7 +66,7 @@
         <div id="upstreamList" class="card-list"></div>
       </section>
 
-      <section class="panel dashboard-card" data-panel-id="routes">
+          <section class="panel dashboard-card" data-panel-id="routes" data-tab-page="routes">
         <div class="panel-heading">
           <div><span class="section-number">03</span><h2>模型路由</h2></div>
           <button id="addRouteButton" class="button primary">＋ 添加路由</button>
@@ -54,7 +75,7 @@
         <div id="routeList" class="card-list"></div>
       </section>
 
-      <section class="panel model-catalog-panel dashboard-card" data-panel-id="models">
+          <section class="panel model-catalog-panel dashboard-card" data-panel-id="models" data-tab-page="models">
         <div class="panel-heading">
           <div><span class="section-number">04</span><h2>本地模型选择</h2></div>
           <div class="panel-actions"><button id="syncAllModelsButton" class="button secondary">拉取全部模型</button><button id="saveModelSelectionsButton" class="button primary">保存勾选</button></div>
@@ -65,7 +86,7 @@
         <div id="modelSelectionMessage" class="form-message"></div>
       </section>
 
-      <section class="panel dashboard-card" data-panel-id="keys">
+          <section class="panel dashboard-card" data-panel-id="keys" data-tab-page="keys">
         <div class="panel-heading">
           <div><span class="section-number">05</span><h2>本地调用 Key</h2></div>
           <button id="addKeyButton" class="button primary">＋ 新建 Key</button>
@@ -74,7 +95,7 @@
         <div id="keyList" class="key-list"></div>
       </section>
 
-      <section class="panel settings-panel dashboard-card" data-panel-id="settings">
+          <section class="panel settings-panel dashboard-card" data-panel-id="settings" data-tab-page="settings">
         <div class="panel-heading">
           <div><span class="section-number">06</span><h2>可靠性设置</h2></div>
           <button id="saveSettingsButton" class="button primary">保存设置</button>
@@ -92,7 +113,7 @@
         <div id="settingsMessage" class="form-message"></div>
       </section>
 
-      <section class="panel endpoint-panel dashboard-card" data-panel-id="metrics">
+          <section class="panel endpoint-panel dashboard-card" data-panel-id="metrics" data-tab-page="metrics">
         <div class="panel-heading">
           <div><span class="section-number">07</span><h2>请求统计</h2></div>
           <div class="panel-actions"><button id="exportRecentUsageButton" class="button secondary">导出近 100 条</button><button id="exportAllUsageButton" class="button secondary">导出全部用量</button><button id="importUsageButton" class="button secondary">导入用量</button><input id="usageFileInput" type="file" accept="application/json,.json" hidden><button id="clearMetricsButton" class="button danger-outline">清空统计</button></div>
@@ -106,7 +127,7 @@
         <div id="requestLogMore" class="log-more hidden"><button id="loadMoreLogsButton" type="button" class="button secondary">加载更多</button></div>
       </section>
 
-      <section class="panel endpoint-panel dashboard-card" data-panel-id="backup">
+          <section class="panel endpoint-panel dashboard-card" data-panel-id="backup" data-tab-page="backup">
         <div class="panel-heading">
           <div><span class="section-number">08</span><h2>配置备份</h2></div>
           <div class="panel-actions"><button id="exportConfigButton" class="button secondary">导出配置</button><button id="importConfigButton" class="button primary">导入配置</button><input id="configFileInput" type="file" accept="application/json,.json" hidden></div>
@@ -114,7 +135,7 @@
         <p class="help">导出文件包含本地 Key、上游 API Key 和旧版兼容字段，请只保存到安全位置。导入默认保留本机当前凭据。</p>
       </section>
 
-      <section class="panel endpoint-panel dashboard-card" data-panel-id="endpoints">
+          <section class="panel endpoint-panel dashboard-card" data-panel-id="endpoints" data-tab-page="overview">
         <div class="panel-heading">
           <div><span class="section-number">09</span><h2>本地接口</h2></div>
         </div>
@@ -125,7 +146,7 @@
         </div>
       </section>
 
-      <section class="panel endpoint-panel dashboard-card" data-panel-id="updates">
+          <section class="panel endpoint-panel dashboard-card" data-panel-id="updates" data-tab-page="overview">
         <div class="panel-heading">
           <div><span class="section-number">10</span><h2>版本与升级</h2></div>
           <button id="checkUpdateButton" type="button" class="button secondary">检查更新</button>
@@ -133,6 +154,8 @@
         <div id="updateStatus" class="update-status"><span>当前版本：<code id="currentVersion">读取中…</code></span><span id="updateMessage" class="muted">尚未检查</span></div>
         <div id="updateDetails" class="update-details hidden"></div>
       </section>
+        </div>
+      </div>
     </div>
   </main>
 

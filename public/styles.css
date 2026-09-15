@@ -31,6 +31,20 @@ h2 { display: inline; margin-left: 14px; font-size: 21px; letter-spacing: -.025e
 .notice strong { color: var(--accent); white-space: nowrap; }
 .panel { margin-top: 18px; padding: 25px; border: 1px solid var(--border); border-radius: 14px; background: rgba(23, 28, 30, .86); box-shadow: 0 15px 45px rgba(0, 0, 0, .12); }
 .auth-panel { margin-top: 18px; }
+.admin-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 26px; align-items: start; margin-top: 26px; }
+.sidebar { position: sticky; top: 26px; padding: 18px 14px; border: 1px solid var(--border); border-radius: 14px; background: rgba(23, 28, 30, .86); box-shadow: 0 15px 45px rgba(0, 0, 0, .12); }
+.sidebar-title { padding: 0 8px 12px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .18em; }
+.tabs { display: grid; gap: 4px; }
+.tab-group { display: grid; gap: 4px; }
+.tab-group + .tab-group { margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--border); }
+.tab-group-title { padding: 0 10px 4px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .16em; }
+.tab { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 11px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: #c9d4d0; font-size: 13px; font-weight: 600; text-align: left; transition: .15s ease; }
+.tab:hover { background: var(--surface-2); color: var(--text); }
+.tab.active { border-color: #467557; background: var(--accent-dark); color: var(--accent); }
+.sidebar-version { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 16px; padding: 11px 10px 0; border-top: 1px solid var(--border); font-size: 11px; }
+.sidebar-version strong { color: var(--accent); font-size: 12px; }
+.content { min-width: 0; }
+.content .auth-panel { margin-top: 0; }
 .panel-heading, .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .panel-heading > div, .dialog-heading > div { display: flex; align-items: baseline; }
 .panel-drag-handle { flex: 0 0 auto; margin-right: 9px; padding: 2px 4px; border: 0; background: transparent; color: var(--muted); cursor: grab; font-size: 15px; line-height: 1; }
@@ -198,6 +212,12 @@ dialog::backdrop { background: #0009; backdrop-filter: blur(3px); }
 @keyframes login-spin { to { transform: rotate(360deg); } }
 @media (max-width: 700px) {
   .shell { width: min(100% - 24px, 1120px); padding-top: 30px; }
+  .admin-layout { grid-template-columns: 1fr; gap: 16px; }
+  .sidebar { position: static; padding: 14px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tab-group { display: contents; }
+  .tab-group-title { display: none; }
+  .tab { width: auto; }
   .topbar, .panel-heading { align-items: flex-start; flex-direction: column; }
   .panel-actions { flex-wrap: wrap; }
   .status-pill { align-self: flex-start; }

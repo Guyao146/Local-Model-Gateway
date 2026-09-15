@@ -11,9 +11,11 @@ const state = {
   metricsRefreshInFlight: false,
   metricsRefreshTimer: null
 };
+state.activeTab = 'overview';
 const $ = (selector) => document.querySelector(selector);
 const { groupModelsByPrefix, mergeModelsById, modelGroupKey, modelPrefix, pooledUpstreamIds, setUnifiedModelsSelected, unifiedModelSelectionKey } = window.ModelGroups;
 const PANEL_ORDER_KEY = 'local-model-gateway.panel-order.v1';
+const ACTIVE_TAB_KEY = 'local-model-gateway.active-tab.v2';
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -60,6 +62,26 @@ function closeDialog(dialog) {
   if (!dialog) return;
   if (typeof dialog.close === 'function' && dialog.open) dialog.close();
   else dialog.removeAttribute('open');
+}
+
+function switchTab(tab) {
+  const target = String(tab || 'overview');
+  state.activeTab = target;
+  for (const page of document.querySelectorAll('[data-tab-page]')) {
+    page.classList.toggle('hidden', page.dataset.tabPage !== target);
+  }
+  for (const button of document.querySelectorAll('.tab')) {
+    const selected = button.dataset.tab === target;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', String(selected));
+  }
+  try { localStorage.setItem(ACTIVE_TAB_KEY, target); } catch { /* persistence is best-effort */ }
+}
+
+function restoreActiveTab() {
+  let saved = '';
+  try { saved = localStorage.getItem(ACTIVE_TAB_KEY) || ''; } catch { saved = ''; }
+  switchTab(saved && document.querySelector(`[data-tab-page="${saved}"]`) ? saved : 'overview');
 }
 
 function enablePanelDragging() {
@@ -592,6 +614,7 @@ async function loadConfig() {
     $('#dashboard').classList.remove('hidden');
     setMessage('配置已载入。', 'success');
     render();
+    switchTab(state.activeTab || 'overview');
   } catch (error) {
     $('#dashboard').classList.add('hidden');
     setMessage(error.message, 'error');
@@ -1028,6 +1051,10 @@ async function checkHealth() {
 
 $('#loadButton').addEventListener('click', loadConfig);
 $('#logoutButton').addEventListener('click', () => { window.location.assign('/auth/logout'); });
+document.querySelector('.tabs').addEventListener('click', (event) => {
+  const button = event.target.closest('.tab');
+  if (button) switchTab(button.dataset.tab);
+});
 $('#addUpstreamButton').addEventListener('click', () => fillUpstreamForm());
 $('#addRouteButton').addEventListener('click', () => {
   if (!state.config.upstreams.length) return toast('请先添加至少一个上游站点', 'error');
@@ -1098,5 +1125,6 @@ window.addEventListener('keydown', (event) => {
 });
 checkHealth();
 enablePanelDragging();
+restoreActiveTab();
 initializeAdminAccess();
 state.metricsRefreshTimer = window.setInterval(() => refreshMetrics(), 5000);
