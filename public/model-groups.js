@@ -89,6 +89,7 @@
         upstreamModel: modelId,
         localModel: previous.localModel || modelId,
         thinkingLevel: previous.thinkingLevel || 'auto',
+        responsesMode: previous.responsesMode || 'auto',
         enabled: true
       });
     }
@@ -120,6 +121,7 @@
         upstreamModel: modelId,
         localModel: previous.localModel || modelId,
         thinkingLevel: previous.thinkingLevel || 'auto',
+        responsesMode: previous.responsesMode || 'auto',
         enabled: true
       });
     }

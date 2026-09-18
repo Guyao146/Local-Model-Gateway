@@ -115,7 +115,8 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 
 `selection` 字段：`upstreamModel`（上游模型 ID）、`localModel`（本地别名）、
 `upstreamId`（主站）、`upstreamIds`（轮询池子集）、`upstreamMode`（`auto`/`fixed`）、
-`thinkingLevel`、`enabled`。详见 [模型路由与轮询](routing.md)。
+`thinkingLevel`、`responsesMode`（`auto`/`native`/`chat`，模型级接口协议，覆盖上游设置）、`enabled`。
+详见 [模型路由与轮询](routing.md)。
 
 ### 可靠性设置与状态
 

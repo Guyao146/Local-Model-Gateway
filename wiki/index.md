@@ -36,7 +36,7 @@ node src/server.js
 | 协议 | OpenAI Chat Completions、Anthropic Messages、OpenAI Responses，三者请求/响应/SSE 流式互转 |
 | 上游管理 | 增删改、连接测试、余额查询（NewAPI / Sub2API）、`/v1/models` 拉取与回填、客户端标识预设 |
 | 路由 | 精确匹配 → `*` 兜底 → 上游模型列表匹配；故障转移 / 轮询 / 加权轮询 / 随机四种策略；备用上游 |
-| 模型选择 | 同名模型跨站合并、按前缀分组、本地别名、默认思考强度；自动轮询池 / 固定站两种模式 |
+| 模型选择 | 同名模型跨站合并、按前缀分组、本地别名、默认思考强度、模型级接口协议（Chat/Responses）；自动轮询池 / 固定站两种模式 |
 | 可靠性 | 内存熔断（阈值 + 冷却 + 半开探测）、全局并发限制、每 Key 每分钟限流、`x-request-id` 透传 |
 | 指标日志 | 聚合计数存 `metrics.json`；请求日志追加写入 `metrics-log.jsonl`，可分页查询，上限可调 |
 | 安全 | 回环免认证 + Authentik OIDC（Authorization Code + PKCE + JWKS + HttpOnly 会话）、本地 API Key 管理 |

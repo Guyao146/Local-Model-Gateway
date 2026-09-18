@@ -119,11 +119,11 @@ textarea { resize: vertical; line-height: 1.5; }
 .prefix-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .model-prefix-body { display: grid; gap: 7px; padding: 0 7px 7px; }
 .model-prefix.collapsed .model-prefix-body { display: none; }
-.model-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) minmax(360px, 560px); gap: 9px; align-items: center; padding: 10px; border: 1px solid #344043; border-radius: 7px; background: #151b1c; }
+.model-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) minmax(420px, 640px); gap: 9px; align-items: center; padding: 10px; border: 1px solid #344043; border-radius: 7px; background: #151b1c; }
 .model-row > input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--accent); }
 .model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px "SFMono-Regular", Consolas, monospace; }
 .model-info { margin-top: 5px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.model-controls { display: grid; grid-template-columns: minmax(150px, 1.35fr) minmax(130px, 1fr) 105px; gap: 7px; }
+.model-controls { display: grid; grid-template-columns: minmax(140px, 1.3fr) minmax(120px, 1fr) 104px 104px; gap: 7px; }
 .model-controls input, .model-controls select { margin-top: 0; padding: 8px; font-size: 11px; }
 .source-count-badge { display: inline-block; margin-left: 5px; padding: 2px 5px; border: 1px solid #4d6570; border-radius: 4px; color: #a9d5e5; font-size: 10px; }
 .model-pool { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 4px; padding: 8px 10px; border: 1px dashed #3d545c; border-radius: 6px; background: #10181a; }
@@ -245,7 +245,7 @@ dialog::backdrop { background: #0009; backdrop-filter: blur(3px); }
   .model-prefix-toggle { width: 100%; padding: 7px; }
   .model-group-actions { justify-content: flex-end; }
   .model-row { grid-template-columns: 22px minmax(0, 1fr); }
-  .model-controls { grid-column: 2; grid-template-columns: minmax(0, 1fr) 105px; }
+  .model-controls { grid-column: 2; grid-template-columns: minmax(0, 1fr) 104px 104px; }
   .model-controls [data-action="model-upstream"] { grid-column: 1 / -1; }
 }
 @media (max-width: 900px) {

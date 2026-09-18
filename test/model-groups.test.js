@@ -36,12 +36,15 @@ const original = new Map([[existingKey, {
   upstreamId: 'up-1',
   upstreamModel: 'gpt-4o',
   localModel: 'my-gpt',
-  thinkingLevel: 'high'
+  thinkingLevel: 'high',
+  responsesMode: 'chat'
 }]]);
 const selected = setModelsSelected(original, 'up-1', groups.find((group) => group.prefix === 'gpt').models, true);
 assert.equal(selected.size, 2);
 assert.equal(selected.get(existingKey).localModel, 'my-gpt');
 assert.equal(selected.get(existingKey).thinkingLevel, 'high');
+assert.equal(selected.get(existingKey).responsesMode, 'chat', '批量勾选应保留已配置的接口协议偏好');
+assert.equal(selected.get(modelSelectionKey('up-1', 'gpt-4.1')).responsesMode, 'auto', '新增勾选默认使用自动协议');
 assert.equal(selected.get(modelSelectionKey('up-1', 'gpt-4.1')).localModel, 'gpt-4.1');
 assert.equal(original.size, 1, '批量操作不应原地修改已有草稿');
 

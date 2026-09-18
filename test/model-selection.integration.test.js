@@ -276,10 +276,56 @@ async function main() {
     assert.equal(observed.openai.length, openAICountBeforeFixed, '固定 Anthropic 后不应请求 OpenAI 站点');
     assert.equal(observed.anthropic.length, anthropicCountBeforeFixed + 1);
 
+    // 模型级接口协议偏好：chat 模式下 /v1/responses 请求必须直接走 Chat Completions，
+    // 不能先打 /v1/responses 撞 404 再回退（mock 对 /v1/responses 一律返回 404）。
+    const chatSelections = fixedResult.body.selections.concat([
+      { upstreamId: openaiUpstream.body.id, upstreamModel: 'gpt-plain', localModel: 'my-plain-chat', responsesMode: 'chat' }
+    ]);
+    const chatResult = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/model-selections`, {
+      method: 'PUT', headers: adminHeaders, body: JSON.stringify({ selections: chatSelections })
+    });
+    assert.equal(chatResult.status, 200, JSON.stringify(chatResult.body));
+    const chatSelection = chatResult.body.selections.find((item) => item.upstreamModel === 'gpt-plain');
+    assert.equal(chatSelection.responsesMode, 'chat');
+    const chatRoute = (await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/config`, { headers: adminHeaders })).body.routes.find((item) => item.localModel === 'my-plain-chat');
+    assert.equal(chatRoute.responsesMode, 'chat', '托管路由应继承模型选择的协议偏好');
+    const chatBefore = observed.openai.length;
+    const responsesViaChat = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: 'POST', headers: localHeaders,
+      body: JSON.stringify({ model: 'my-plain-chat', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'protocol-chat' }] }] })
+    });
+    assert.equal(responsesViaChat.status, 200, JSON.stringify(responsesViaChat.body));
+    assert.equal(responsesViaChat.body.object, 'response', 'Chat 响应应被转换回 Responses 格式');
+    assert.equal(observed.openai.length, chatBefore + 1, 'chat 模式应恰好发起一次 Chat Completions 请求');
+    assert.deepEqual(observed.openai.at(-1).messages[0].content, [{ type: 'text', text: 'protocol-chat' }]);
+
+    // 手工路由同样支持协议偏好，并校验非法值回退为 auto。
+    const nativeRoute = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/routes`, {
+      method: 'POST', headers: adminHeaders,
+      body: JSON.stringify({ localModel: 'my-plain-native', upstreamId: openaiUpstream.body.id, upstreamModel: 'gpt-plain', responsesMode: 'native' })
+    });
+    assert.equal(nativeRoute.status, 201, JSON.stringify(nativeRoute.body));
+    assert.equal(nativeRoute.body.responsesMode, 'native');
+    const badRoute = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/routes`, {
+      method: 'POST', headers: adminHeaders,
+      body: JSON.stringify({ localModel: 'my-plain-bad', upstreamId: openaiUpstream.body.id, upstreamModel: 'gpt-plain', responsesMode: 'bogus' })
+    });
+    assert.equal(badRoute.status, 201, JSON.stringify(badRoute.body));
+    assert.equal(badRoute.body.responsesMode, 'auto', '非法协议值应回退为 auto');
+
+    // native 模式下即使上游 /v1/responses 返回 404 也不能悄悄回退到 Chat Completions。
+    const nativeBefore = observed.openai.length;
+    const nativeResponses = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: 'POST', headers: localHeaders,
+      body: JSON.stringify({ model: 'my-plain-native', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'protocol-native' }] }] })
+    });
+    assert.equal(nativeResponses.status, 404, JSON.stringify(nativeResponses.body));
+    assert.equal(observed.openai.length, nativeBefore, 'native 模式不应回退到 Chat Completions');
+
     const exported = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/config/export`, { headers: adminHeaders });
     assert.equal(exported.status, 200, JSON.stringify(exported.body));
     assert.equal(exported.body.config.modelSelectionMode, true);
-    assert.equal(exported.body.config.modelSelections.length, 3);
+    assert.equal(exported.body.config.modelSelections.length, 4);
 
     const legacyBackup = JSON.parse(JSON.stringify(exported.body));
     const legacySharedSelection = legacyBackup.config.modelSelections.find((item) => item.upstreamModel === 'shared-model');

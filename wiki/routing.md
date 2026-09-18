@@ -51,10 +51,19 @@
 后台「本地模型选择」区域：
 
 1. 按模型 ID 合并所有来源站，按前缀分组展示（前缀取 `-`/`_`/`:`/`/` 之前的片段）。
-2. 每个模型可勾选是否暴露给本地 APP；可设置本地别名与默认思考强度。
+2. 每个模型可勾选是否暴露给本地 APP；可设置本地别名、默认思考强度与接口协议。
 3. 同名模型多站存在时选择 `upstreamMode`：
    - **自动选择（`auto`）**：所有来源站（或勾选的子集）组成轮询池。
    - **固定站（`fixed`）**：只使用下拉框选定的单个站点。
+4. **接口协议（`responsesMode`，模型级）**：覆盖上游的 `responsesMode`，决定该模型走
+   `/v1/responses` 还是 `/v1/chat/completions`。
+   - `auto`（默认）：按上游支持情况自动选择，上游不支持 Responses 时回退到 Chat Completions。
+   - `native`：强制 `/v1/responses`；即使上游返回 404/405/501 也**不会**回退到 Chat Completions。
+   - `chat`：强制 `/v1/chat/completions`；客户端打 `/v1/responses` 时网关会自动转换请求与响应。
+
+   适合同一个站点上不同模型走不同协议（例如某些模型只支持 Chat Completions）。
+   注意：function tools 与 `reasoning_effort` 的组合必须走原生 Responses，此时选 `chat`
+   会直接返回 `unsupported_agent_capability` 错误，而不是降级。
 
 保存时后端 `saveModelSelections` 会把每个选择合成（或复用）一条
 `managedBy: 'model-selector'` 的托管路由：

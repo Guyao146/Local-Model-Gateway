@@ -607,6 +607,7 @@ function normalizeModelSelection(item, existing = {}) {
     upstreamModel,
     localModel,
     thinkingLevel: normalizeThinkingLevel(item?.thinkingLevel ?? existing.thinkingLevel ?? 'auto'),
+    responsesMode: normalizeResponsesMode(item?.responsesMode ?? existing.responsesMode ?? 'auto'),
     enabled: item?.enabled !== false,
     managedRouteId: existing.managedRouteId || item.managedRouteId || null,
     createdAt: existing.createdAt || item.createdAt || nowIso(),
@@ -700,6 +701,7 @@ function saveModelSelections(rawSelections) {
       upstreamId: selection.upstreamId,
       upstreamModel,
       thinkingLevel: selection.thinkingLevel,
+      responsesMode: selection.responsesMode,
       strategy: selection.upstreamMode === 'auto' ? 'round_robin' : 'failover',
       fallbackUpstreamIds,
       upstreamWeights,
@@ -734,11 +736,15 @@ function validateBaseUrl(value) {
   return url.toString().replace(/\/$/, '');
 }
 
+function normalizeResponsesMode(value) {
+  return value === 'native' || value === 'chat' ? value : 'auto';
+}
+
 function upstreamFromBody(body, existing = {}) {
   if (!body.name || !body.baseUrl) throw new Error('上游名称和地址不能为空');
   const protocol = body.protocol === 'anthropic' ? 'anthropic' : 'openai';
   const requestedResponsesMode = body.responsesMode ?? existing.responsesMode ?? 'auto';
-  const responsesMode = ['auto', 'native', 'chat'].includes(requestedResponsesMode) ? requestedResponsesMode : 'auto';
+  const responsesMode = normalizeResponsesMode(requestedResponsesMode);
   const authType = body.authType === 'x-api-key' || body.authType === 'none'
     ? body.authType
     : (protocol === 'anthropic' ? 'x-api-key' : 'bearer');
@@ -796,6 +802,7 @@ function buildRoute(body, existing = {}, availableUpstreams, existingRoutes) {
   const strategy = body.strategy ?? existing.strategy ?? 'failover';
   if (!ROUTE_STRATEGIES.has(strategy)) throw new Error(`不支持的路由策略：${strategy}`);
   const thinkingLevel = normalizeThinkingLevel(body.thinkingLevel ?? existing.thinkingLevel ?? 'auto');
+  const responsesMode = normalizeResponsesMode(body.responsesMode ?? existing.responsesMode ?? 'auto');
   const fallbackValue = body.fallbackUpstreamIds !== undefined
     ? body.fallbackUpstreamIds
     : (existing.fallbackUpstreamIds || []);
@@ -829,6 +836,7 @@ function buildRoute(body, existing = {}, availableUpstreams, existingRoutes) {
     strategy,
     upstreamWeights,
     thinkingLevel,
+    responsesMode,
     ...(body.managedBy ? { managedBy: String(body.managedBy) } : {}),
     ...(body.selectionId ? { selectionId: String(body.selectionId) } : {}),
     enabled: body.enabled !== false,
@@ -915,17 +923,21 @@ function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel,
   const modelEntry = modelEntryFor(upstream, model);
   const thinkingLevel = localInput.thinkingLevel || 'auto';
   const inputWithThinking = applyThinkingLevel(localInput, thinkingLevel, upstream, modelEntry);
+  // 模型级协议偏好优先于上游级 responsesMode：路由里显式指定时覆盖上游设置。
+  const responsesMode = normalizeResponsesMode(options.responsesMode) !== 'auto'
+    ? normalizeResponsesMode(options.responsesMode)
+    : normalizeResponsesMode(upstream.responsesMode);
   const requiresNative = localProtocol === 'responses'
     ? responseRequestRequiresNative(inputWithThinking)
     : localProtocol === 'openai'
       ? chatRequestRequiresNative(inputWithThinking)
       : false;
   const nativeResponses = localProtocol === 'responses'
-    ? upstream.protocol === 'openai' && upstream.responsesMode !== 'chat' && options.forceChat !== true
+    ? upstream.protocol === 'openai' && responsesMode !== 'chat' && options.forceChat !== true
     : localProtocol === 'openai'
       && requiresNative
       && upstream.protocol === 'openai'
-      && upstream.responsesMode !== 'chat'
+      && responsesMode !== 'chat'
       && options.forceChat !== true;
   const openAIInput = localProtocol === 'responses' ? responseInputToOpenAI(inputWithThinking, model) : inputWithThinking;
   let body;
@@ -946,7 +958,8 @@ function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel,
     body,
     headers: upstreamHeaders(upstream, requestId, options.requestHeaders),
     nativeResponses,
-    requiresNative
+    requiresNative,
+    responsesMode
   };
 }
 
@@ -956,7 +969,7 @@ function responsesNativeUnsupported(status) {
 
 function responsesNativeCapabilityError(upstream) {
   return {
-    message: `上游“${upstream.name}”不支持此请求所需的 Responses API 原生能力；请启用可用的 /v1/responses，function tools 与 reasoning_effort 组合不能回退到 Chat Completions`,
+    message: `上游“${upstream.name}”不支持此请求所需的 Responses API 原生能力。function tools 与 reasoning_effort 组合不能回退到 Chat Completions；请把该模型的「接口协议」改为「自动」或「Responses」，或确认上游已启用 /v1/responses。`,
     type: 'unsupported_agent_capability'
   };
 }
@@ -1509,8 +1522,9 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     const requestInput = routeThinkingLevel === 'auto' && input.thinkingLevel === undefined
       ? input
       : { ...input, thinkingLevel: input.thinkingLevel ?? routeThinkingLevel };
-    const requestInfo = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { requestHeaders: req.headers });
-    if (requestInfo.requiresNative && (upstream.protocol !== 'openai' || upstream.responsesMode === 'chat')) {
+    const routeResponsesMode = selected.route?.responsesMode;
+    const requestInfo = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { requestHeaders: req.headers, responsesMode: routeResponsesMode });
+    if (requestInfo.requiresNative && (upstream.protocol !== 'openai' || requestInfo.responsesMode === 'chat')) {
       upstreamResponse = null;
       attempts.push({ upstream: upstream.name, status: 400 });
       lastError = { status: 400, body: { error: responsesNativeCapabilityError(upstream) } };
@@ -1531,7 +1545,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
       attempts.push({ upstream: upstream.name, status: upstreamResponse.status });
       if (
         requestInfo.nativeResponses
-        && upstream.responsesMode !== 'native'
+        && requestInfo.responsesMode !== 'native'
         && responsesNativeUnsupported(upstreamResponse.status)
         && !requestInfo.requiresNative
       ) {
@@ -1540,7 +1554,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
           status: upstreamResponse.status
         });
         resetResponseBody(upstreamResponse);
-        const fallbackRequest = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { forceChat: true, requestHeaders: req.headers });
+        const fallbackRequest = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { forceChat: true, requestHeaders: req.headers, responsesMode: routeResponsesMode });
         upstreamResponse = await fetchUpstream(fallbackRequest);
         nativeResponses = false;
         attempts.push({ upstream: upstream.name, status: upstreamResponse.status, fallback: 'chat_completions' });
