@@ -154,6 +154,27 @@ function normalizeAttempts(attempts) {
   }));
 }
 
+// 请求诊断：记录发往上游的请求体与上游/客户端的帧样本，用于排查协议转换问题。
+// 每个字段都做截断，保证日志文件不会因此膨胀。
+function normalizeDiagnostics(diag) {
+  if (!diag || typeof diag !== 'object') return null;
+  const pickList = (list) => (Array.isArray(list) ? list.map((item) => String(item).slice(0, 1000)).slice(0, 12) : []);
+  const result = {
+    upstreamPath: String(diag.upstreamPath || '').slice(0, 200),
+    nativeResponses: Boolean(diag.nativeResponses),
+    responsesMode: String(diag.responsesMode || '').slice(0, 30),
+    upstreamRequest: String(diag.upstreamRequest || '').slice(0, 2000),
+    upstreamResponse: pickList(diag.upstreamResponse),
+    output: pickList(diag.output),
+    warnings: Array.isArray(diag.warnings) ? diag.warnings.map((item) => String(item).slice(0, 300)).slice(0, 10) : []
+  };
+  const hasContent = result.upstreamRequest
+    || result.upstreamResponse.length
+    || result.output.length
+    || result.warnings.length;
+  return hasContent ? result : null;
+}
+
 function recordRequest(entry) {
   const usage = normalizeUsage(entry.usage);
   const attempts = normalizeAttempts(entry.attempts);
@@ -174,7 +195,8 @@ function recordRequest(entry) {
     failover: attempts.length > 1,
     attempts,
     usage,
-    ...(entry.error ? { error: String(entry.error).slice(0, 500) } : {})
+    ...(entry.error ? { error: String(entry.error).slice(0, 500) } : {}),
+    ...(normalizeDiagnostics(entry.diag) ? { diagnostics: normalizeDiagnostics(entry.diag) } : {})
   };
 
   const totals = metrics.totals;

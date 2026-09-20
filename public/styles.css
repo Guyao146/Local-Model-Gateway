@@ -160,6 +160,14 @@ tr:last-child td { border-bottom: 0; }
 .priority-input { width: 54px; margin: 0 0 0 4px; padding: 3px 5px; }
 .log-more { display: flex; justify-content: center; margin-top: 12px; }
 .log-more.hidden { display: none; }
+.log-row-expandable { cursor: pointer; }
+.log-row-expandable:hover { background: rgba(231, 193, 126, .08); }
+.log-detail-row > td { padding: 12px 14px; border-top: 1px dashed var(--border); background: rgba(0, 0, 0, .18); }
+.diag-meta { margin-bottom: 10px; color: var(--muted); font-size: 12px; }
+.diag-section { margin-bottom: 10px; }
+.diag-title { margin-bottom: 4px; color: #e7c17e; font-size: 11px; letter-spacing: .4px; }
+.diag-section pre { margin: 0; padding: 9px 11px; border: 1px solid var(--border); border-radius: 7px; background: rgba(0, 0, 0, .35); color: var(--text); font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; }
+.diag-warnings ul { margin: 0; padding-left: 18px; color: var(--danger); font-size: 12px; line-height: 1.6; }
 .endpoint-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
 .endpoint-grid > div { padding: 15px; border: 1px solid var(--border); border-radius: 8px; }
 .endpoint-grid span { display: block; margin-bottom: 9px; color: var(--muted); font-size: 11px; }

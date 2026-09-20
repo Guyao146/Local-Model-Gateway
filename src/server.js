@@ -37,6 +37,16 @@ const { createAdminAuth } = require('./admin-auth');
 const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
 const { clientIdentityHeaders, normalizeClientIdentity } = require('./client-identity');
 const { checkLatestRelease, isTrustedDownloadUrl } = require('./update-checker');
+const {
+  createDiagnostics,
+  captureUpstreamRequest,
+  captureUpstreamEvent,
+  attachOutputCapture,
+  scanIds,
+  normalizeIdsInPlace,
+  sample,
+  warn
+} = require('./diagnostics');
 
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -1097,6 +1107,7 @@ async function pipeRawStream(response, res, options = {}) {
     if (!data || data === '[DONE]') return;
     try {
       let parsed = JSON.parse(data);
+      captureUpstreamEvent(options.diag, parsed);
       if (options.normalizeResponses) {
         parsed = normalizeResponsesEvent(parsed, options.state);
         res.write(`${eventName ? `event: ${eventName}\n` : ''}data: ${JSON.stringify(parsed)}\n\n`);
@@ -1136,7 +1147,7 @@ function openAIChunk(model, id, delta, finishReason = null, usage) {
   };
 }
 
-async function anthropicStreamAsOpenAI(response, res, model) {
+async function anthropicStreamAsOpenAI(response, res, model, diag) {
   const id = `chatcmpl_${crypto.randomBytes(8).toString('hex')}`;
   let started = false;
   let stopped = false;
@@ -1153,6 +1164,7 @@ async function anthropicStreamAsOpenAI(response, res, model) {
     if (data === '[DONE]') return;
     let parsed;
     try { parsed = JSON.parse(data); } catch { return; }
+    captureUpstreamEvent(diag, parsed);
     const eventName = name || parsed.type;
     if (eventName === 'message_start') {
       usage.input_tokens = parsed.message?.usage?.input_tokens || 0;
@@ -1206,7 +1218,7 @@ async function anthropicStreamAsOpenAI(response, res, model) {
   return usage;
 }
 
-async function openAIStreamAsAnthropic(response, res, model) {
+async function openAIStreamAsAnthropic(response, res, model, diag) {
   const id = `msg_${crypto.randomBytes(8).toString('hex')}`;
   let started = false;
   let blockOpen = false;
@@ -1240,6 +1252,7 @@ async function openAIStreamAsAnthropic(response, res, model) {
     }
     let parsed;
     try { parsed = JSON.parse(data); } catch { return; }
+    captureUpstreamEvent(diag, parsed);
     sendStart();
     if (parsed.usage) {
       usage.prompt_tokens = parsed.usage.prompt_tokens || usage.prompt_tokens;
@@ -1306,7 +1319,7 @@ function makeResponsesMessage(id, model, text, status = 'in_progress') {
   };
 }
 
-async function openAIStreamAsResponses(response, res, model) {
+async function openAIStreamAsResponses(response, res, model, diag) {
   const responseId = `resp_${crypto.randomBytes(8).toString('hex')}`;
   const messageId = `msg_${crypto.randomBytes(8).toString('hex')}`;
   let started = false;
@@ -1327,6 +1340,7 @@ async function openAIStreamAsResponses(response, res, model) {
     }
     let parsed;
     try { parsed = JSON.parse(data); } catch { return; }
+    captureUpstreamEvent(diag, parsed);
     start();
     const choice = parsed.choices?.[0] || {};
     const delta = choice.delta || {};
@@ -1359,7 +1373,7 @@ async function openAIStreamAsResponses(response, res, model) {
   return usage;
 }
 
-async function responsesStreamAsOpenAI(response, res, model) {
+async function responsesStreamAsOpenAI(response, res, model, diag) {
   // 局部变量刻意命名为 chunkId，避免遮蔽导入的 responseId() 归一化函数。
   let chunkId = `chatcmpl_${crypto.randomBytes(8).toString('hex')}`;
   let started = false;
@@ -1382,6 +1396,7 @@ async function responsesStreamAsOpenAI(response, res, model) {
     if (data === '[DONE]') return;
     let parsed;
     try { parsed = JSON.parse(data); } catch { return; }
+    captureUpstreamEvent(diag, parsed);
     const eventName = name || parsed.type;
     if (eventName === 'response.created') {
       // 上游 response.id 可能是 null/数字/对象（部分聚合站），归一为字符串，
@@ -1459,7 +1474,7 @@ async function responsesStreamAsOpenAI(response, res, model) {
   return usage;
 }
 
-async function anthropicStreamAsResponses(response, res, model) {
+async function anthropicStreamAsResponses(response, res, model, diag) {
   const responseId = `resp_${crypto.randomBytes(8).toString('hex')}`;
   const messageId = `msg_${crypto.randomBytes(8).toString('hex')}`;
   let started = false;
@@ -1476,6 +1491,7 @@ async function anthropicStreamAsResponses(response, res, model) {
     if (data === '[DONE]') return;
     let parsed;
     try { parsed = JSON.parse(data); } catch { return; }
+    captureUpstreamEvent(diag, parsed);
     const eventName = name || parsed.type;
     if (eventName === 'message_start') {
       start();
@@ -1512,6 +1528,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   const wantsStream = Boolean(input.stream);
   const attempts = [];
   let selectedStrategy = 'failover';
+  const diag = createDiagnostics();
   log('model request started', { requestId, protocol: localProtocol, model: localModel, stream: wantsStream });
   const finishMetrics = (details) => safeRecordRequest({
     id: requestId,
@@ -1523,6 +1540,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     strategy: selectedStrategy,
     stream: wantsStream,
     attempts,
+    diag,
     ...details
   });
   if (!localModel) {
@@ -1556,6 +1574,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
       : { ...input, thinkingLevel: input.thinkingLevel ?? routeThinkingLevel };
     const routeResponsesMode = selected.route?.responsesMode;
     const requestInfo = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { requestHeaders: req.headers, responsesMode: routeResponsesMode });
+    captureUpstreamRequest(diag, requestInfo);
     if (requestInfo.requiresNative && (upstream.protocol !== 'openai' || requestInfo.responsesMode === 'chat')) {
       upstreamResponse = null;
       attempts.push({ upstream: upstream.name, status: 400 });
@@ -1647,6 +1666,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
 
   if (!wantsStream) {
     const body = await readResponseJson(upstreamResponse);
+    captureUpstreamEvent(diag, body);
     let result;
     if (nativeResponses) {
       result = localProtocol === 'openai'
@@ -1666,6 +1686,14 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     } else {
       result = openAIResponseToAnthropic(body, localModel);
     }
+    // 输出前兜底：任何残留的非字符串 id 都就地修正并记录警告。
+    const badIds = [];
+    scanIds(result, '$', badIds);
+    for (const bad of badIds) {
+      warn(diag, `输出含非字符串 id：${bad.path} = ${JSON.stringify(bad.value)}（已自动修正为字符串）`);
+    }
+    if (badIds.length) normalizeIdsInPlace(result);
+    sample(diag.output, JSON.stringify(result));
     finishMetrics({ success: true, status: 200, upstream: upstream.name, upstreamModel, usage: result.usage || body.usage });
     sendJsonWithRequestId(res, 200, result, requestId);
     return;
@@ -1678,21 +1706,23 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     'x-request-id': requestId,
     ...corsHeaders()
   });
+  // 挂上输出捕获：采样发给客户端的帧，并兜底修正任何非字符串 id。
+  attachOutputCapture(res, diag);
   try {
     let streamUsage;
     if (nativeResponses) {
       streamUsage = localProtocol === 'openai'
-        ? await responsesStreamAsOpenAI(upstreamResponse, res, localModel)
-        : await pipeRawStream(upstreamResponse, res, { normalizeResponses: true, state: {} });
+        ? await responsesStreamAsOpenAI(upstreamResponse, res, localModel, diag)
+        : await pipeRawStream(upstreamResponse, res, { normalizeResponses: true, state: {}, diag });
     }
-    else if (localProtocol === upstream.protocol) streamUsage = await pipeRawStream(upstreamResponse, res);
-    else if (localProtocol === 'openai') streamUsage = await anthropicStreamAsOpenAI(upstreamResponse, res, localModel);
+    else if (localProtocol === upstream.protocol) streamUsage = await pipeRawStream(upstreamResponse, res, { diag });
+    else if (localProtocol === 'openai') streamUsage = await anthropicStreamAsOpenAI(upstreamResponse, res, localModel, diag);
     else if (localProtocol === 'responses') {
       streamUsage = upstream.protocol === 'anthropic'
-        ? await anthropicStreamAsResponses(upstreamResponse, res, localModel)
-        : await openAIStreamAsResponses(upstreamResponse, res, localModel);
+        ? await anthropicStreamAsResponses(upstreamResponse, res, localModel, diag)
+        : await openAIStreamAsResponses(upstreamResponse, res, localModel, diag);
     }
-    else streamUsage = await openAIStreamAsAnthropic(upstreamResponse, res, localModel);
+    else streamUsage = await openAIStreamAsAnthropic(upstreamResponse, res, localModel, diag);
     finishMetrics({ success: true, status: 200, upstream: upstream.name, upstreamModel, usage: streamUsage });
   } catch (error) {
       log('stream error', { requestId, message: error.message });

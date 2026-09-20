@@ -250,6 +250,16 @@ async function main() {
         }
       }
     }
+    // 诊断信息应写入请求日志：能从后台 API 拿到该请求的上游路径与输出样本。
+    const diagLogs = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/logs?limit=50`, { headers: adminHeaders });
+    assert.equal(diagLogs.status, 200, JSON.stringify(diagLogs.body));
+    const diagEntry = (diagLogs.json.items || []).find((item) => item.stream && item.model === 'agent-local');
+    assert.ok(diagEntry, '应能在请求日志中找到该流式请求');
+    assert.ok(diagEntry.diagnostics, '该请求应携带诊断信息');
+    assert.equal(diagEntry.diagnostics.upstreamPath, '/v1/responses');
+    assert.equal(diagEntry.diagnostics.nativeResponses, true);
+    assert.ok((diagEntry.diagnostics.upstreamResponse || []).length > 0, '应采样上游响应帧');
+    assert.ok((diagEntry.diagnostics.output || []).length > 0, '应采样网关输出帧');
     const streamResponse = await request(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: { ...localHeaders, 'x-request-id': 'native-agent-stream-001' }, body: JSON.stringify({ ...agentRequest, stream: true })
     });

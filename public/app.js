@@ -555,6 +555,26 @@ async function refreshMetrics() {
 
 const STRATEGY_LABELS = { failover: '故障转移', round_robin: '轮询', weighted: '加权轮询', random: '随机' };
 
+function renderLogDetailRow(diag) {
+  const section = (title, text) => (text
+    ? `<div class="diag-section"><div class="diag-title">${title}</div><pre>${escapeHtml(text)}</pre></div>`
+    : '');
+  const list = (title, items) => (Array.isArray(items) && items.length
+    ? `<div class="diag-section diag-warnings"><div class="diag-title">${title}</div><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div>`
+    : '');
+  const meta = [
+    `上游路径：${escapeHtml(diag.upstreamPath || '-')}`,
+    diag.nativeResponses ? '接口：Responses 原生' : '接口：Chat Completions',
+    diag.responsesMode ? `协议模式：${escapeHtml(diag.responsesMode)}` : ''
+  ].filter(Boolean).join(' ｜ ');
+  const body = `<div class="diag-meta">${meta}</div>`
+    + section('上游请求（网关发出）', diag.upstreamRequest)
+    + section('上游响应样本（前若干帧）', (diag.upstreamResponse || []).join('\n'))
+    + section('网关输出样本（发给客户端，前若干帧）', (diag.output || []).join('\n'))
+    + list('警告', diag.warnings);
+  return `<tr class="log-detail-row hidden"><td colspan="10">${body}</td></tr>`;
+}
+
 function renderLogRow(entry) {
   const errorTitle = entry.error ? ` title="${escapeHtml(entry.error)}"` : '';
   const protocol = { openai: 'Chat', anthropic: 'Messages', responses: 'Responses' }[entry.protocol] || entry.protocol || '-';
@@ -564,16 +584,20 @@ function renderLogRow(entry) {
   const attempts = (entry.attempts || []).map((attempt) => `${attempt.upstream} (${attempt.status ?? '连接失败'})`).join(' → ');
   const strategy = escapeHtml(STRATEGY_LABELS[entry.strategy] || entry.strategy || '故障转移');
   const attemptDetail = attempts ? `<span class="log-detail" title="${escapeHtml(attempts)}">${escapeHtml(attempts)}</span>` : '';
-  return `<tr><td><code>${escapeHtml(entry.id || '-')}</code></td><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td>${escapeHtml(protocol)}${entry.stream ? '<span class="small-tag">流式</span>' : ''}</td><td>${model}</td><td>${strategy}${attemptDetail}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="log-result ${entry.success ? 'success-text' : 'error-text'}"${errorTitle}>${entry.success ? '成功' : `失败：${escapeHtml(entry.error || '未知错误')}`}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`;
+  const hasDiag = Boolean(entry.diagnostics);
+  const rowClass = `log-row${hasDiag ? ' log-row-expandable' : ''}`;
+  const main = `<tr class="${rowClass}"><td><code>${escapeHtml(entry.id || '-')}</code>${hasDiag ? '<span class="small-tag">诊断</span>' : ''}</td><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td>${escapeHtml(protocol)}${entry.stream ? '<span class="small-tag">流式</span>' : ''}</td><td>${model}</td><td>${strategy}${attemptDetail}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="log-result ${entry.success ? 'success-text' : 'error-text'}"${errorTitle}>${entry.success ? '成功' : `失败：${escapeHtml(entry.error || '未知错误')}`}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`;
+  return hasDiag ? main + renderLogDetailRow(entry.diagnostics) : main;
 }
 
 function updateLogSummary() {
   const page = state.logPage || {};
-  const shown = $('#requestLogBody').querySelectorAll('tr').length;
+  const shown = $('#requestLogBody').querySelectorAll('.log-row').length;
   const summary = $('#requestLogSummary');
   if (summary) {
     const maxLabel = page.maxLogs ? `，最多保留最近 ${formatNumber(page.maxLogs)} 条` : '';
-    summary.textContent = page.total ? `已显示 ${formatNumber(shown)} / ${formatNumber(page.total)} 条${maxLabel}，仅记录元数据` : '仅记录元数据';
+    const sampleLabel = shown ? '，点击「诊断」行查看上游请求与输出样本' : '，仅记录元数据';
+    summary.textContent = page.total ? `已显示 ${formatNumber(shown)} / ${formatNumber(page.total)} 条${maxLabel}${sampleLabel}` : '仅记录元数据';
   }
   const more = $('#requestLogMore');
   if (more) more.classList.toggle('hidden', !page.hasMore);
@@ -584,7 +608,7 @@ async function loadMoreLogs() {
   state.loadingMoreLogs = true;
   const button = $('#loadMoreLogsButton');
   if (button) { button.disabled = true; button.textContent = '加载中…'; }
-  const shown = $('#requestLogBody').querySelectorAll('tr').length;
+  const shown = $('#requestLogBody').querySelectorAll('.log-row').length;
   try {
     const page = await api(`/api/admin/metrics/logs?offset=${shown}&limit=100`);
     $('#requestLogBody').insertAdjacentHTML('beforeend', (page.items || []).map(renderLogRow).join(''));
@@ -1102,6 +1126,12 @@ $('#routeList').addEventListener('click', handleListClick);
 $('#keyList').addEventListener('click', handleListClick);
 $('#clearMetricsButton').addEventListener('click', clearMetrics);
 $('#refreshLogsButton').addEventListener('click', refreshRequestLogs);
+$('#requestLogBody').addEventListener('click', (event) => {
+  const row = event.target.closest('.log-row-expandable');
+  if (!row) return;
+  const detail = row.nextElementSibling;
+  if (detail && detail.classList.contains('log-detail-row')) detail.classList.toggle('hidden');
+});
 $('#loadMoreLogsButton').addEventListener('click', loadMoreLogs);
 $('#exportRecentUsageButton').addEventListener('click', () => exportUsage('recent'));
 $('#exportAllUsageButton').addEventListener('click', () => exportUsage('all'));
