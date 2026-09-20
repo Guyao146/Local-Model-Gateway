@@ -63,7 +63,20 @@ function writeSse(res, data, eventName) {
   res.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`);
 }
 
+function writeSplitStream(res, fixture) {
+  const bytes = Buffer.from(fixture.text);
+  const unicodeIndex = bytes.indexOf(Buffer.from('错误'));
+  const split = unicodeIndex >= 0 ? unicodeIndex + 1 : Math.max(1, Math.floor(bytes.length / 2));
+  res.write(bytes.subarray(0, split));
+  setTimeout(() => {
+    if (fixture.disconnect) res.destroy();
+    else res.end(bytes.subarray(split));
+  }, 10);
+}
+
 async function main() {
+  let openAIOverride = null;
+  let anthropicOverride = null;
   const openAI = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -75,6 +88,7 @@ async function main() {
     }
     if (req.url !== '/v1/chat/completions') return res.end('data: {"object":"list","data":[]}\n\n');
     const body = JSON.parse(raw);
+    if (openAIOverride) return writeSplitStream(res, openAIOverride);
     writeSse(res, { id: 'stream-chat', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
     writeSse(res, { id: 'stream-chat', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { content: 'hello ' }, finish_reason: null }] });
     writeSse(res, { id: 'stream-chat', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { content: 'stream' }, finish_reason: null }] });
@@ -88,6 +102,7 @@ async function main() {
     res.setHeader('Content-Type', 'text/event-stream');
     if (req.url !== '/v1/messages') return res.end();
     const body = JSON.parse(raw);
+    if (anthropicOverride) return writeSplitStream(res, anthropicOverride);
     writeSse(res, { type: 'message_start', message: { id: 'anthropic-stream', usage: { input_tokens: 7 } } }, 'message_start');
     writeSse(res, { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, 'content_block_start');
     writeSse(res, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hello anthropic' } }, 'content_block_delta');
@@ -167,6 +182,91 @@ async function main() {
     assert.equal(metrics.json.totals.completionTokens, 10);
     assert.equal(metrics.json.totals.totalTokens, 21);
     assert.equal(metrics.json.logs.every((entry) => entry.stream), true);
+    // 正常透传必须逐字不变，包括中文跨网络分片、CRLF、注释和 [DONE]。
+    const normalRaw = ': keepalive\r\n\r\ndata: not-json\r\n\r\ndata: {"id":"normal-stream","choices":[{"delta":{"content":"没有错误 😀"}}]}\r\n\r\ndata: [DONE]\r\n\r\n';
+    openAIOverride = { text: normalRaw };
+    const normal = await request(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST', headers: localHeaders, body: JSON.stringify({ model: 'openai-stream-local', stream: true, messages: [] })
+    });
+    openAIOverride = null;
+    assert.equal(normal.status, 200);
+    assert.equal(normal.body, normalRaw);
+
+    const rawMessage = '上游流错误：请稍后重试';
+    for (const prefix of ['[TestGateway]', '']) {
+      await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
+        method: 'PUT', headers: adminHeaders, body: JSON.stringify({ errorPrefix: prefix })
+      });
+      for (const upstreamProtocol of ['openai', 'anthropic']) {
+        const error = upstreamProtocol === 'openai'
+          ? { type: 'rate_limit_error', code: 'stream_quota', message: rawMessage, param: 'model' }
+          : { type: 'overloaded_error', message: rawMessage };
+        const payload = { ...(upstreamProtocol === 'anthropic' ? { type: 'error' } : {}), error, request_id: 'upstream-only', extra: 'keep' };
+        const fixture = {
+          // 多行 data、保留 SSE 元信息，并故意不给末帧分隔符。
+          text: `: upstream keepalive\r\n\r\nid: upstream-event\r\nretry: 1000\r\nevent: error\r\ndata: ${JSON.stringify(payload, null, 2).replace(/\n/g, '\r\ndata: ')}`
+        };
+        if (upstreamProtocol === 'openai') openAIOverride = fixture;
+        else anthropicOverride = fixture;
+        for (const [protocol, endpoint] of [['openai', '/v1/chat/completions'], ['anthropic', '/v1/messages'], ['responses', '/v1/responses']]) {
+          const requestId = `stream-error-${upstreamProtocol}-${protocol}-${prefix ? 'prefix' : 'plain'}`;
+          const result = await request(`http://127.0.0.1:${gatewayPort}${endpoint}`, {
+            method: 'POST', headers: { ...localHeaders, 'x-request-id': requestId },
+            body: JSON.stringify({ model: `${upstreamProtocol}-stream-local`, stream: true,
+              ...(protocol === 'responses' ? { input: 'error' } : { messages: [{ role: 'user', content: 'error' }], max_tokens: 32 }) })
+          });
+          assert.equal(result.status, 200, result.body);
+          assert.equal(result.headers['x-request-id'], requestId);
+          const events = parseSse(result.body).filter((event) => event.data && event.data !== '[DONE]');
+          const errors = events.map((event) => ({ ...event, json: JSON.parse(event.data) }))
+            .filter((event) => event.json.error || event.json.type === 'error');
+          assert.equal(errors.length, 1, `流错误不能被吞掉或重复发送：${result.body}`);
+          const event = errors[0];
+          const details = event.json.error || event.json;
+          assert.equal(event.json.request_id, requestId);
+          assert.equal(details.message, `${prefix ? `${prefix} ` : ''}[request_id=${requestId}] [code=${error.code || '502'}] ${rawMessage}`);
+          assert.equal(details.code, protocol === 'responses' ? (error.code || '502') : error.code);
+          if (protocol !== 'responses') assert.equal(details.type, error.type);
+          if (protocol !== 'openai') assert.equal(event.name, 'error');
+          if (protocol === 'anthropic') assert.equal(event.json.type, 'error');
+          if (protocol === upstreamProtocol) {
+            assert.match(result.body, /: upstream keepalive\r\n\r\nid: upstream-event\r\nretry: 1000\r\nevent: error/);
+            assert.equal(event.json.extra, 'keep');
+          }
+          assert.doesNotMatch(result.body, /response\.completed|message_stop|data: \[DONE\]/, '不能把失败伪装成成功结束');
+          assert.match(result.body, /\r?\n\r?\n$/, '末尾错误帧必须有完整 SSE 分隔符');
+        }
+        openAIOverride = null;
+        anthropicOverride = null;
+      }
+    }
+    // 建立 200 流之后连接中断：三种客户端协议均返回 502 错误消息，而非 code=200。
+    openAIOverride = { text: ': connection will close\n\n', disconnect: true };
+    for (const [protocol, endpoint] of [['openai', '/v1/chat/completions'], ['anthropic', '/v1/messages'], ['responses', '/v1/responses']]) {
+      const requestId = `stream-disconnect-${protocol}`;
+      const result = await request(`http://127.0.0.1:${gatewayPort}${endpoint}`, {
+        method: 'POST', headers: { ...localHeaders, 'x-request-id': requestId },
+        body: JSON.stringify({ model: 'openai-stream-local', stream: true,
+          ...(protocol === 'responses' ? { input: 'disconnect' } : { messages: [{ role: 'user', content: 'disconnect' }], max_tokens: 32 }) })
+      });
+      assert.equal(result.status, 200);
+      const events = parseSse(result.body).filter((event) => event.data && event.data !== '[DONE]');
+      const errors = events.map((event) => JSON.parse(event.data)).filter((event) => event.error || event.type === 'error');
+      assert.equal(errors.length, 1, result.body);
+      assert.equal(errors[0].request_id, requestId);
+      assert.ok((errors[0].error || errors[0]).message.startsWith(`[request_id=${requestId}] [code=502] `));
+    }
+    openAIOverride = null;
+    const errorLogs = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/logs?limit=100`, { headers: adminHeaders });
+    for (const upstreamProtocol of ['openai', 'anthropic']) {
+      for (const protocol of ['openai', 'anthropic', 'responses']) {
+        const requestId = `stream-error-${upstreamProtocol}-${protocol}-plain`;
+        const entry = errorLogs.json.items.find((item) => item.id === requestId);
+        assert.ok(entry, `应根据错误消息中的 ${requestId} 查到日志`);
+        assert.equal(entry.success, false, '上游 SSE 错误不能记作成功');
+        assert.equal(entry.error, rawMessage, '原始错误保留在日志中');
+      }
+    }
     console.log('stream integration tests passed');
   } catch (error) {
     throw new Error(`${error.message}\n${stderr}`);

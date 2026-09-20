@@ -9,6 +9,8 @@ const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'releas
 const config = fs.readFileSync(path.join(root, 'src', 'config.js'), 'utf8');
 const electronPackage = JSON.parse(fs.readFileSync(path.join(root, 'clients', 'electron', 'package.json'), 'utf8'));
 const rootPackage = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const webviewProject = fs.readFileSync(path.join(root, 'clients', 'webview2', 'LocalModelGateway.WebView2.csproj'), 'utf8');
+const indexHtml = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 
 assert.match(electron, /findFreePort/);
 assert.match(electron, /LOCAL_MODEL_GATEWAY_FORCE_SETTINGS: 'true'/);
@@ -31,5 +33,7 @@ assert.match(config, /LOCAL_MODEL_GATEWAY_FORCE_SETTINGS/);
 assert.match(workflow, /gateway\/src\/server\.js/);
 assert.match(workflow, /gateway\/public\/index\.html/);
 assert.equal(electronPackage.version, rootPackage.version);
+assert.equal(webviewProject.match(/<Version>([^<]+)<\/Version>/)?.[1], rootPackage.version, 'WebView2 版本必须与根包一致');
+assert.equal(indexHtml.match(/class="sidebar-version"[^\n]*<strong>v([^<]+)<\/strong>/)?.[1], rootPackage.version, '页面版本必须与根包一致');
 assert.match(fs.readFileSync(path.join(root, 'clients', 'electron', 'package.json'), 'utf8'), /preload\.js/);
 console.log('desktop client tests passed');

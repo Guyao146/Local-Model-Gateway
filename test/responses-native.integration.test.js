@@ -55,10 +55,19 @@ function writeSse(res, data, eventName) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+function parseSse(body) {
+  return body.split(/\r?\n\r?\n/).map((frame) => {
+    const name = frame.split(/\r?\n/).find((line) => line.startsWith('event:'))?.slice(6).trim() || '';
+    const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
+    return data && data !== '[DONE]' ? { name, json: JSON.parse(data) } : null;
+  }).filter(Boolean);
+}
+
 async function main() {
   const received = [];
   let rejectNativeResponses = false;
   let customFrames = null;
+  let customJson = null;
   const upstream = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -92,6 +101,11 @@ async function main() {
     if (rejectNativeResponses) {
       res.statusCode = 404;
       res.end(JSON.stringify({ error: { message: 'native responses unavailable' } }));
+      return;
+    }
+    if (!body.stream && customJson) {
+      res.statusCode = customJson.status;
+      res.end(JSON.stringify(customJson.body));
       return;
     }
     if (body.stream && customFrames) {
@@ -327,12 +341,17 @@ async function main() {
       { type: 'response.completed', response: { output: [] } }
     ];
     const orphan = await request(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
-      method: 'POST', headers: localHeaders,
+      method: 'POST', headers: { ...localHeaders, 'x-request-id': 'orphan-plain' },
       body: JSON.stringify({ model: 'chat-native', stream: true, messages: [{ role: 'user', content: 'tools' }] })
     });
     customFrames = null;
     assert.match(orphan.body, /无法转换为 Chat/);
     assert.doesNotMatch(orphan.body, /"tool_calls"/);
+    const orphanErrors = parseSse(orphan.body).filter((event) => event.json.error);
+    assert.equal(orphanErrors.length, 1);
+    assert.equal(orphan.headers['x-request-id'], 'orphan-plain');
+    assert.equal(orphanErrors[0].json.request_id, 'orphan-plain');
+    assert.equal(orphanErrors[0].json.error.message, '[request_id=orphan-plain] [code=502] Responses 工具调用缺少名称或关联信息，无法转换为 Chat');
     // 工具调用转换失败属于网关自身错误，必须同样带上可自定义前缀。
     await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
       method: 'PUT', headers: adminHeaders, body: JSON.stringify({ errorPrefix: '[TestGateway]' })
@@ -342,11 +361,90 @@ async function main() {
       { type: 'response.completed', response: { output: [] } }
     ];
     const prefixed = await request(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
-      method: 'POST', headers: localHeaders,
+      method: 'POST', headers: { ...localHeaders, 'x-request-id': 'orphan-prefixed' },
       body: JSON.stringify({ model: 'chat-native', stream: true, messages: [{ role: 'user', content: 'tools' }] })
     });
     customFrames = null;
-    assert.match(prefixed.body, /\[TestGateway\] .*无法转换为 Chat/);
+    const prefixedErrors = parseSse(prefixed.body).filter((event) => event.json.error);
+    assert.equal(prefixedErrors.length, 1);
+    assert.equal(prefixed.headers['x-request-id'], 'orphan-prefixed');
+    assert.equal(prefixedErrors[0].json.request_id, 'orphan-prefixed');
+    assert.equal(prefixedErrors[0].json.error.message, '[TestGateway] [request_id=orphan-prefixed] [code=502] Responses 工具调用缺少名称或关联信息，无法转换为 Chat');
+    // 原生 Responses 的 error / response.failed 均保留原事件结构；转成 Chat 时也不能吞错。
+    const nativeErrors = [
+      { type: 'error', code: 'invalid_argument', message: '原生流错误', param: 'input', sequence_number: 2 },
+      { type: 'error', error: { type: 'upstream_error', code: 0, message: '嵌套流错误' }, sequence_number: 3 },
+      { type: 'response.failed', sequence_number: 4,
+        response: { id: 'resp_failed_not_request', object: 'response', status: 'failed', output: [], error: { code: 'server_error', message: '响应失败错误' } } },
+      { type: 'error', code: null, message: '缺少错误码', sequence_number: 5 }
+    ];
+    for (const prefix of ['[TestGateway]', '']) {
+      await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
+        method: 'PUT', headers: adminHeaders, body: JSON.stringify({ errorPrefix: prefix })
+      });
+      for (const [index, source] of nativeErrors.entries()) {
+        for (const protocol of ['responses', 'chat']) {
+          const requestId = `native-error-${protocol}-${index}-${prefix ? 'prefix' : 'plain'}`;
+          customFrames = [
+            { type: 'response.created', response: { id: source.response?.id || 'resp_before_error', status: 'in_progress' } },
+            { ...source, request_id: 'upstream-only-request' }
+          ];
+          const result = await request(`http://127.0.0.1:${gatewayPort}/v1/${protocol === 'chat' ? 'chat/completions' : 'responses'}`, {
+            method: 'POST', headers: { ...localHeaders, 'x-request-id': requestId },
+            body: JSON.stringify(protocol === 'chat'
+              ? { model: 'chat-native', stream: true, messages: [{ role: 'user', content: 'error' }] }
+              : { model: 'agent-local', stream: true, input: 'error' })
+          });
+          customFrames = null;
+          assert.equal(result.status, 200, result.body);
+          assert.equal(result.headers['x-request-id'], requestId);
+          const events = parseSse(result.body);
+          const errors = events.filter((event) => event.json.error || event.json.type === 'error' || event.json.type === 'response.failed');
+          assert.equal(errors.length, 1, result.body);
+          const event = errors[0];
+          const original = source.error || source.response?.error || source;
+          const details = event.json.error || event.json.response?.error || event.json;
+          assert.equal(event.json.request_id, requestId);
+          assert.equal(details.message, `${prefix ? `${prefix} ` : ''}[request_id=${requestId}] [code=${original.code ?? '502'}] ${original.message}`);
+          assert.equal(details.code, original.code);
+          if (protocol === 'responses') {
+            assert.equal(event.name, source.type);
+            assert.equal(event.json.type, source.type);
+            assert.equal(event.json.sequence_number, source.sequence_number);
+            if (source.response) {
+              assert.equal(event.json.response.id, source.response.id);
+              assert.equal(event.json.response.status, 'failed');
+              assert.deepEqual(event.json.response.output, []);
+            }
+          }
+          assert.doesNotMatch(result.body, /response\.completed|data: \[DONE\]/);
+          assert.equal(received.at(-1).headers['x-request-id'], requestId);
+        }
+      }
+    }
+    // JSON 失败对象在 HTTP 200 内也要装饰，且不能经 Responses→Chat 变成成功回复。
+    for (const status of [200, 429]) {
+      customJson = { status, body: { id: 'resp_json_failure', object: 'response', status: 'failed', request_id: 'upstream-only-request',
+        error: { code: 'json_failure', message: '原生 JSON 错误', type: 'rate_limit_error' }, output: [] } };
+      for (const protocol of ['responses', 'chat']) {
+        const requestId = `native-json-${status}-${protocol}`;
+        const result = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/${protocol === 'chat' ? 'chat/completions' : 'responses'}`, {
+          method: 'POST', headers: { ...localHeaders, 'x-request-id': requestId },
+          body: JSON.stringify(protocol === 'chat'
+            ? { model: 'chat-native', messages: [{ role: 'user', content: 'error' }] }
+            : { model: 'agent-local', input: 'error' })
+        });
+        assert.equal(result.status, status);
+        assert.equal(result.headers['x-request-id'], requestId);
+        assert.equal(result.json.request_id, requestId);
+        assert.equal(result.json.error.code, 'json_failure');
+        assert.equal(result.json.error.type, 'rate_limit_error');
+        assert.equal(result.json.error.message, `[request_id=${requestId}] [code=json_failure] 原生 JSON 错误`);
+        if (protocol === 'responses') assert.equal(result.json.id, 'resp_json_failure');
+        assert.equal(result.json.choices, undefined);
+      }
+    }
+    customJson = null;
     await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
       method: 'PUT', headers: adminHeaders, body: JSON.stringify({ errorPrefix: '' })
     });
@@ -395,6 +493,8 @@ async function main() {
     assert.equal(unsupportedFunctionReasoning.status, 400, JSON.stringify(unsupportedFunctionReasoning.json));
     assert.equal(unsupportedFunctionReasoning.json.error.type, 'unsupported_agent_capability');
     assert.match(unsupportedFunctionReasoning.json.error.message, /function tools 与 reasoning_effort/);
+    assert.ok(unsupportedFunctionReasoning.json.error.message.startsWith(`[request_id=${unsupportedFunctionReasoning.headers['x-request-id']}] [code=400] `));
+    assert.equal(unsupportedFunctionReasoning.json.request_id, unsupportedFunctionReasoning.headers['x-request-id']);
     const unsupportedFunctionReasoningCalls = received.slice(callsBeforeUnsupportedFunctionReasoning);
     assert.equal(unsupportedFunctionReasoningCalls.length, 1);
     assert.equal(unsupportedFunctionReasoningCalls[0].url, '/v1/responses');
@@ -404,6 +504,8 @@ async function main() {
     assert.equal(unsupported.status, 400, JSON.stringify(unsupported.json));
     assert.equal(unsupported.json.error.type, 'unsupported_agent_capability');
     assert.match(unsupported.json.error.message, /不支持此请求所需的 Responses API 原生能力/);
+    assert.ok(unsupported.json.error.message.startsWith(`[request_id=${unsupported.headers['x-request-id']}] [code=400] `));
+    assert.equal(unsupported.json.request_id, unsupported.headers['x-request-id']);
     assert.equal(received.slice(callsAfterReject).some((item) => item.url === '/v1/chat/completions'), false);
     console.log('native responses integration tests passed');
   } catch (error) {

@@ -38,6 +38,13 @@ const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
 const { clientIdentityHeaders, normalizeClientIdentity } = require('./client-identity');
 const { checkLatestRelease, isTrustedDownloadUrl } = require('./update-checker');
 const {
+  errorMessage,
+  isErrorPayload,
+  formatErrorPayload,
+  errorForProtocol,
+  streamErrorForProtocol
+} = require('./errors');
+const {
   createDiagnostics,
   captureUpstreamRequest,
   captureUpstreamEvent,
@@ -87,10 +94,6 @@ function safeRecordRequest(entry) {
   }
 }
 
-function errorMessage(body, fallback = '上游请求失败') {
-  return body?.error?.message || body?.message || fallback;
-}
-
 function isEqualSecret(left, right) {
   if (!left || !right || typeof left !== 'string' || typeof right !== 'string') return false;
   const leftBuffer = Buffer.from(left);
@@ -99,6 +102,11 @@ function isEqualSecret(left, right) {
 }
 
 function sendJson(res, statusCode, payload, extraHeaders = {}) {
+  if (statusCode >= 400 || isErrorPayload(payload)) {
+    const requestId = res.gatewayRequestId;
+    payload = formatErrorPayload(payload, { prefix: errorPrefix(), requestId, status: statusCode });
+    extraHeaders = { ...extraHeaders, 'x-request-id': requestId };
+  }
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -111,7 +119,7 @@ function sendJson(res, statusCode, payload, extraHeaders = {}) {
 
 function sendJsonWithRequestId(res, statusCode, payload, requestId, extraHeaders = {}) {
   const body = payload && typeof payload === 'object' && !Array.isArray(payload)
-    ? { request_id: requestId, ...payload }
+    ? { ...payload, request_id: requestId }
     : payload;
   sendJson(res, statusCode, body, { 'x-request-id': requestId, ...extraHeaders });
 }
@@ -237,12 +245,6 @@ function settingsFromBody(body, existing = config.settings) {
 // 错误消息前面，便于客户端区分“这是网关返回的”还是“上游原样透传的”。
 function errorPrefix() {
   return normalizeSettings(config.settings).errorPrefix || '';
-}
-
-function applyErrorPrefix(message) {
-  const prefix = errorPrefix();
-  const text = String(message ?? '');
-  return prefix ? `${prefix} ${text}` : text;
 }
 
 function findLocalKey(token) {
@@ -386,14 +388,12 @@ function requireAdmin(req, res) {
   return false;
 }
 
-function requireApiKey(req, res, requestId) {
+function requireApiKey(req, res, requestId = requestIdFromRequest(req), localProtocol = 'openai') {
   const key = findLocalKey(getApiToken(req));
   if (key) return key;
-  const body = { error: { message: '需要有效的本地 API Key', type: 'authentication_error' } };
-  if (requestId) {
-    logRequestError(requestId, 401, body);
-    sendJsonWithRequestId(res, 401, body, requestId);
-  } else sendJson(res, 401, body);
+  const body = errorForProtocol(localProtocol, { error: { message: '需要有效的本地 API Key', type: 'authentication_error' } }, 401);
+  logRequestError(requestId, 401, body);
+  sendJsonWithRequestId(res, 401, body, requestId);
   return null;
 }
 
@@ -940,8 +940,10 @@ function safeModel(input, fallback) {
 }
 
 function requestIdFromRequest(req) {
+  if (req.gatewayRequestId) return req.gatewayRequestId;
   const supplied = String(req.headers['x-request-id'] || '').trim();
-  return /^[A-Za-z0-9._:-]{1,120}$/.test(supplied) ? supplied : `req_${crypto.randomBytes(8).toString('hex')}`;
+  req.gatewayRequestId = /^[A-Za-z0-9._:-]{1,120}$/.test(supplied) ? supplied : `req_${crypto.randomBytes(8).toString('hex')}`;
+  return req.gatewayRequestId;
 }
 
 // /v1/responses 与 /v1/chat/completions 的思考参数形态不同：前者用 reasoning: { effort }，
@@ -1065,25 +1067,22 @@ async function readResponseJson(response) {
   }
 }
 
-function errorForProtocol(localProtocol, body, status) {
-  if (localProtocol === 'anthropic') {
-    const message = body?.error?.message || body?.message || `上游返回 HTTP ${status}`;
-    return { type: 'error', error: { type: 'api_error', message: applyErrorPrefix(message) } };
-  }
-  if (body?.error) {
-    // 拷贝一份再加前缀：原始 body 还会被日志/聚合统计引用，不能就地改写。
-    return { ...body, error: { ...body.error, message: applyErrorPrefix(body.error.message ?? `上游返回 HTTP ${status}`) } };
-  }
-  return { error: { message: applyErrorPrefix(body?.message || `上游返回 HTTP ${status}`), type: 'upstream_error' } };
-}
-
 function shouldRetryUpstream(status) {
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 function writeSse(res, data, eventName) {
+  if (isErrorPayload(data, eventName)) {
+    data = formatErrorPayload(data, { prefix: errorPrefix(), requestId: res.gatewayRequestId, status: 502, eventName });
+  }
   if (eventName) res.write(`event: ${eventName}\n`);
   res.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`);
+}
+
+function throwIfStreamError(body, eventName) {
+  if (isErrorPayload(body, eventName)) {
+    throw Object.assign(new Error(errorMessage(body)), { upstreamBody: body });
+  }
 }
 
 async function consumeSse(response, onEvent) {
@@ -1099,15 +1098,20 @@ async function consumeSse(response, onEvent) {
     }
     if (event.data) await onEvent(event);
   };
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    const frames = buffer.split(/\r?\n\r?\n/);
-    buffer = frames.pop() || '';
-    for (const frame of frames) await flush(frame);
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() || '';
+      for (const frame of frames) await flush(frame);
+      if (done) break;
+    }
+    if (buffer.trim()) await flush(buffer);
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
-  if (buffer.trim()) await flush(buffer);
 }
 
 async function pipeRawStream(response, res, options = {}) {
@@ -1116,43 +1120,62 @@ async function pipeRawStream(response, res, options = {}) {
   const decoder = new TextDecoder();
   let buffer = '';
   const usage = {};
-  const inspectFrame = (frame) => {
+  const forwardFrame = (frame, separator = '') => {
     let data = '';
     let eventName = '';
     for (const line of frame.split(/\r?\n/)) {
       if (line.startsWith('event:')) eventName = line.slice(6).trim();
       if (line.startsWith('data:')) data += (data ? '\n' : '') + line.slice(5).trimStart();
     }
-    if (!data || data === '[DONE]') return;
-    try {
-      let parsed = JSON.parse(data);
-      captureUpstreamEvent(options.diag, parsed);
-      if (options.normalizeResponses) {
-        parsed = normalizeResponsesEvent(parsed, options.state);
-        res.write(`${eventName ? `event: ${eventName}\n` : ''}data: ${JSON.stringify(parsed)}\n\n`);
-      }
-      const eventUsage = parsed.usage || parsed.message?.usage;
-      if (eventUsage) Object.assign(usage, eventUsage);
-    } catch {
-      // A non-JSON SSE comment or provider-specific event does not affect forwarding.
+    let parsed;
+    try { parsed = JSON.parse(data); } catch {
+      res.write(frame + separator);
+      return;
     }
+    captureUpstreamEvent(options.diag, parsed);
+    const failed = isErrorPayload(parsed, eventName);
+    let output = options.normalizeResponses ? normalizeResponsesEvent(parsed, options.state) : parsed;
+    if (failed) {
+      output = formatErrorPayload(output, { prefix: errorPrefix(), requestId: res.gatewayRequestId, status: 502, eventName });
+    }
+    if (output !== parsed) {
+      // 只替换 data 行；保留 event/id/retry、注释和原始换行符。
+      let replaced = false;
+      const newline = frame.includes('\r\n') ? '\r\n' : '\n';
+      frame = frame.split(/\r?\n/).flatMap((line) => {
+        if (!line.startsWith('data:')) return [line];
+        if (replaced) return [];
+        replaced = true;
+        return [`data: ${JSON.stringify(output)}`];
+      }).join(newline);
+    }
+    res.write(frame + (failed && !separator ? (frame.includes('\r\n') ? '\r\n\r\n' : '\n\n') : separator));
+    if (failed) {
+      throw Object.assign(new Error(errorMessage(parsed)), { upstreamBody: parsed, forwarded: true });
+    }
+    const eventUsage = parsed?.usage || parsed?.message?.usage || parsed?.response?.usage;
+    if (eventUsage) Object.assign(usage, eventUsage);
   };
-  const inspectText = (text) => {
+  const forwardText = (text) => {
     buffer += text;
-    const frames = buffer.split(/\r?\n\r?\n/);
-    buffer = frames.pop() || '';
-    for (const frame of frames) inspectFrame(frame);
+    const parts = buffer.split(/(\r?\n\r?\n)/);
+    buffer = parts.pop() || '';
+    for (let index = 0; index < parts.length; index += 2) forwardFrame(parts[index], parts[index + 1]);
   };
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!options.normalizeResponses) res.write(Buffer.from(value));
-    inspectText(decoder.decode(value, { stream: true }));
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      forwardText(decoder.decode(value, { stream: true }));
+    }
+    forwardText(decoder.decode());
+    if (buffer) forwardFrame(buffer);
+    res.end();
+    return Object.keys(usage).length ? usage : undefined;
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
-  inspectText(decoder.decode());
-  if (buffer.trim()) inspectFrame(buffer);
-  res.end();
-  return Object.keys(usage).length ? usage : undefined;
 }
 
 function openAIChunk(model, id, delta, finishReason = null, usage) {
@@ -1185,6 +1208,7 @@ async function anthropicStreamAsOpenAI(response, res, model, diag) {
     try { parsed = JSON.parse(data); } catch { return; }
     captureUpstreamEvent(diag, parsed);
     const eventName = name || parsed.type;
+    throwIfStreamError(parsed, eventName);
     if (eventName === 'message_start') {
       usage.input_tokens = parsed.message?.usage?.input_tokens || 0;
       ensureStarted();
@@ -1261,7 +1285,7 @@ async function openAIStreamAsAnthropic(response, res, model, diag) {
       }
     }, 'message_start');
   };
-  await consumeSse(response, async ({ data }) => {
+  await consumeSse(response, async ({ name, data }) => {
     if (data === '[DONE]') {
       sendStart();
       if (blockOpen) writeSse(res, { type: 'content_block_stop', index: toolBlockIndex }, 'content_block_stop');
@@ -1272,6 +1296,7 @@ async function openAIStreamAsAnthropic(response, res, model, diag) {
     let parsed;
     try { parsed = JSON.parse(data); } catch { return; }
     captureUpstreamEvent(diag, parsed);
+    throwIfStreamError(parsed, name);
     sendStart();
     if (parsed.usage) {
       usage.prompt_tokens = parsed.usage.prompt_tokens || usage.prompt_tokens;
@@ -1352,7 +1377,7 @@ async function openAIStreamAsResponses(response, res, model, diag) {
     writeSse(res, { type: 'response.output_item.added', response_id: responseId, output_index: 0, item: makeResponsesMessage(messageId, model, '') }, 'response.output_item.added');
     writeSse(res, { type: 'response.content_part.added', response_id: responseId, item_id: messageId, output_index: 0, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } }, 'response.content_part.added');
   };
-  await consumeSse(response, async ({ data }) => {
+  await consumeSse(response, async ({ name, data }) => {
     if (data === '[DONE]') {
       start();
       return;
@@ -1360,6 +1385,7 @@ async function openAIStreamAsResponses(response, res, model, diag) {
     let parsed;
     try { parsed = JSON.parse(data); } catch { return; }
     captureUpstreamEvent(diag, parsed);
+    throwIfStreamError(parsed, name);
     start();
     const choice = parsed.choices?.[0] || {};
     const delta = choice.delta || {};
@@ -1454,6 +1480,7 @@ async function responsesStreamAsOpenAI(response, res, model, diag) {
     try { parsed = JSON.parse(data); } catch { return; }
     captureUpstreamEvent(diag, parsed);
     const eventName = name || parsed.type;
+    throwIfStreamError(parsed, eventName);
     if (eventName === 'response.created') {
       // 上游 response.id 可能是 null/数字/对象（部分聚合站），归一为字符串，
       // 否则后续每个 chunk 都带着非字符串 id，客户端反序列化直接失败。
@@ -1532,6 +1559,7 @@ async function anthropicStreamAsResponses(response, res, model, diag) {
     try { parsed = JSON.parse(data); } catch { return; }
     captureUpstreamEvent(diag, parsed);
     const eventName = name || parsed.type;
+    throwIfStreamError(parsed, eventName);
     if (eventName === 'message_start') {
       start();
       usage.input_tokens = parsed.message?.usage?.input_tokens || 0;
@@ -1706,6 +1734,14 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   if (!wantsStream) {
     const body = await readResponseJson(upstreamResponse);
     captureUpstreamEvent(diag, body);
+    if (isErrorPayload(body)) {
+      // 有些上游在 HTTP 200 内返回失败对象；不能经转换后变成空的成功回复。
+      const result = (nativeResponses && localProtocol === 'responses') || (!nativeResponses && localProtocol === upstream.protocol)
+        ? body : errorForProtocol(localProtocol, body, 502);
+      finishMetrics({ success: false, status: 502, upstream: upstream.name, upstreamModel, error: errorMessage(body) });
+      sendJsonWithRequestId(res, upstreamResponse.status, result, requestId);
+      return;
+    }
     let result;
     if (nativeResponses) {
       result = localProtocol === 'openai'
@@ -1764,10 +1800,13 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     else streamUsage = await openAIStreamAsAnthropic(upstreamResponse, res, localModel, diag);
     finishMetrics({ success: true, status: 200, upstream: upstream.name, upstreamModel, usage: streamUsage });
   } catch (error) {
-      log('stream error', { requestId, message: error.message });
+    log('stream error', { requestId, message: error.message });
     finishMetrics({ success: false, status: 502, upstream: upstream.name, upstreamModel, error: error.message });
     if (!res.writableEnded) {
-      writeSse(res, { error: { message: applyErrorPrefix(error.message), type: 'upstream_error' } });
+      if (!error.forwarded) {
+        const body = error.upstreamBody || { error: { message: error.message, type: 'upstream_error' } };
+        writeSse(res, streamErrorForProtocol(localProtocol, body), localProtocol === 'openai' ? undefined : 'error');
+      }
       res.end();
     }
   }
@@ -2467,7 +2506,7 @@ async function requestHandler(req, res) {
   if ((pathname === '/v1/chat/completions' || pathname === '/v1/messages' || pathname === '/v1/responses') && req.method === 'POST') {
     const localProtocol = pathname === '/v1/messages' ? 'anthropic' : pathname === '/v1/responses' ? 'responses' : 'openai';
     const requestId = requestIdFromRequest(req);
-    const localKey = requireApiKey(req, res, requestId);
+    const localKey = requireApiKey(req, res, requestId, localProtocol);
     if (!localKey) return;
     const admission = admitModelRequest(localKey);
     if (!admission.ok) {
@@ -2529,6 +2568,7 @@ async function requestHandler(req, res) {
 }
 
 const server = http.createServer((req, res) => {
+  res.gatewayRequestId = requestIdFromRequest(req);
   requestHandler(req, res).catch((error) => {
     log('request error', { message: error.message, stack: error.stack });
     if (!res.headersSent) sendJson(res, error.statusCode || 500, { error: { message: error.message || '服务器内部错误' } });

@@ -13,6 +13,19 @@
 （客户端提供合法值时沿用，否则自动生成），
 该 ID 会透传给上游，并写入请求日志。
 
+JSON 和 SSE 错误消息统一为：
+
+```text
+[自定义前缀] [request_id=req_xxx] [code=错误码] 原始报错内容
+```
+
+自定义前缀通过 `PUT /api/admin/settings` 的 `errorPrefix` 设置，留空只省略前缀。
+错误码优先取上游 `error.code`（Responses 流内错误也支持顶层 `code` 和
+`response.error.code`），缺失时取 HTTP 错误状态码；流内错误以 `502` 兜底，
+不以错误类别 `type` 或握手状态 `200` 代替。结构化 `code`、`type` 等字段及 HTTP
+状态保持不变；错误消息中的请求 ID 与 `x-request-id`、顶层 `request_id` 一致，
+与 Responses 的 `response.id`、工具的 `call_id` 无关。正常响应和正常 SSE 帧不加这些信息。
+
 ---
 
 ## 模型调用接口

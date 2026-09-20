@@ -47,10 +47,17 @@ function waitForOutput(process, text) {
   });
 }
 
+function assertJsonError(result, requestId, code, message, prefix = '[TestGateway]') {
+  assert.equal(result.headers['x-request-id'], requestId);
+  assert.equal(result.body.request_id, requestId);
+  assert.equal(result.body.error.message, `${prefix ? `${prefix} ` : ''}[request_id=${requestId}] [code=${code}] ${message}`);
+}
+
 async function main() {
   const observedRequestIds = [];
   const observedBalanceAuth = [];
   const observedFallbackBodies = [];
+  let upstreamFailure = null;
   let slowStartedResolve;
   const slowStarted = new Promise((resolve) => { slowStartedResolve = resolve; });
   const primary = http.createServer(async (req, res) => {
@@ -99,6 +106,13 @@ async function main() {
     if (req.url === '/v1/chat/completions') {
       const body = JSON.parse(raw);
       observedFallbackBodies.push(body);
+      if (upstreamFailure) {
+        if (upstreamFailure.disconnect) return req.socket.destroy();
+        res.statusCode = upstreamFailure.status;
+        res.setHeader('x-request-id', 'upstream-only-request');
+        res.end(upstreamFailure.raw ?? JSON.stringify(upstreamFailure.body));
+        return;
+      }
       if (raw.includes('slow-concurrency-test')) {
         slowStartedResolve();
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -255,17 +269,98 @@ async function main() {
     assert.equal(recentUsageExport.status, 200, JSON.stringify(recentUsageExport.body));
     assert.equal(recentUsageExport.body.scope, 'recent');
     assert.equal(recentUsageExport.body.records.length, 3);
-    // —— 自定义错误前缀验证（放在计数断言之后，额外请求不影响上面已断言的计数）——
-    // 用“model 不能为空”这个确定性 400 来验证，不依赖路由/上游健康状态。
+    // —— 错误格式回归：放在计数断言之后，不影响原有的成功/故障转移计数。——
     const localHeaders = { Authorization: `Bearer ${config.localApiKeys[0].key}` };
-    const prefixedError = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
-      method: 'POST', headers: { ...localHeaders, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] })
+    const endpoints = [
+      ['chat', '/v1/chat/completions', { messages: [{ role: 'user', content: 'error regression' }] }],
+      ['responses', '/v1/responses', { input: 'error regression' }],
+      ['anthropic', '/v1/messages', { messages: [{ role: 'user', content: 'error regression' }], max_tokens: 32 }]
+    ];
+    for (const [protocol, endpoint, input] of endpoints) {
+      const call = (requestId, body, headers = localHeaders) => requestJson(`http://127.0.0.1:${gatewayPort}${endpoint}`, {
+        method: 'POST', headers: { ...headers, 'x-request-id': requestId }, body
+      });
+      const missingModelId = `missing-model-${protocol}`;
+      const missingModel = await call(missingModelId, JSON.stringify(input));
+      assert.equal(missingModel.status, 400);
+      assertJsonError(missingModel, missingModelId, '400', 'model 不能为空');
+      if (protocol === 'anthropic') assert.equal(missingModel.body.type, 'error');
+      const unauthorizedId = `unauthorized-${protocol}`;
+      const unauthorized = await call(unauthorizedId, JSON.stringify(input), {});
+      assert.equal(unauthorized.status, 401);
+      assert.equal(unauthorized.body.error.type, 'authentication_error');
+      assertJsonError(unauthorized, unauthorizedId, '401', '需要有效的本地 API Key');
+      if (protocol === 'anthropic') assert.equal(unauthorized.body.type, 'error');
+      const malformedId = `malformed-${protocol}`;
+      const malformed = await call(malformedId, '{');
+      assert.equal(malformed.status, 400);
+      assertJsonError(malformed, malformedId, '400', '请求体必须是有效 JSON');
+      // 两个上游均可用时未知模型才返回 404；仅一个可用上游会自动接收任意模型。
+      await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams/${encodeURIComponent(primaryResult.body.id)}/reset-health`, {
+        method: 'POST', headers: adminHeaders, body: '{}'
+      });
+      const unknownModelId = `unknown-model-${protocol}`;
+      const unknownModel = await call(unknownModelId, JSON.stringify({ ...input, model: 'not-configured-error-regression' }));
+      assert.equal(unknownModel.status, 404, JSON.stringify(unknownModel.body));
+      assertJsonError(unknownModel, unknownModelId, '404', '没有找到模型 not-configured-error-regression 的可用上游，请先在后台配置路由');
+
+      upstreamFailure = {
+        status: 400,
+        body: { request_id: 'upstream-only-request', error: { message: '上游配额不足\n请稍后重试', code: 'quota_exceeded', type: 'quota_error', param: 'model' }, extra: 'preserved' }
+      };
+      for (const stream of [false, true]) {
+        const requestId = `upstream-json-${protocol}-${stream}`;
+        const failure = await call(requestId, JSON.stringify({ ...input, model: 'test-local', stream }));
+        assert.equal(failure.status, 400);
+        assertJsonError(failure, requestId, 'quota_exceeded', '上游配额不足\n请稍后重试');
+        assert.equal(failure.body.error.code, 'quota_exceeded');
+        assert.equal(failure.body.error.type, 'quota_error');
+        assert.equal(failure.body.error.param, 'model');
+        assert.equal(failure.body.extra, 'preserved');
+        assert.ok(observedRequestIds.some((entry) => entry.value === requestId), '请求 ID 应透传给上游');
+      }
+      upstreamFailure = null;
+    }
+    const codeCases = [
+      { status: 400, body: { error: { code: 0, message: 'numeric zero' } }, code: '0', message: 'numeric zero' },
+      { status: 401, body: { error: { code: null, type: 'authentication_error', message: 'missing code' } }, code: '401', message: 'missing code' },
+      { status: 418, raw: 'plain text 错误', code: '418', message: 'plain text 错误' },
+      { status: 400, body: { error: 'string error' }, code: '400', message: 'string error' },
+      { status: 400, body: { code: 'root_code', message: 'root error', param: 'model' }, code: 'root_code', message: 'root error' },
+      { status: 400, body: { error: { message: '[TestGateway] already prefixed' } }, code: '400', message: 'already prefixed' },
+      { status: 200, body: { error: { code: 'soft_failure', message: 'error inside HTTP 200' } }, code: 'soft_failure', message: 'error inside HTTP 200' }
+    ];
+    for (const [index, failure] of codeCases.entries()) {
+      upstreamFailure = failure;
+      const requestId = `error-code-${index}`;
+      const result = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+        method: 'POST', headers: { ...localHeaders, 'x-request-id': requestId },
+        body: JSON.stringify({ model: 'test-local', messages: [{ role: 'user', content: 'error code' }] })
+      });
+      assert.equal(result.status, failure.status, '错误格式化不能改变 HTTP 状态');
+      assertJsonError(result, requestId, failure.code, failure.message);
+      if (failure.body?.error && typeof failure.body.error === 'object') {
+        assert.equal(result.body.error.code, failure.body.error.code, '结构化 code 保持原值');
+      }
+    }
+    upstreamFailure = { disconnect: true };
+    const disconnected = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST', headers: { ...localHeaders, 'x-request-id': 'connection-error' },
+      body: JSON.stringify({ model: 'test-local', messages: [{ role: 'user', content: 'disconnect' }] })
     });
-    assert.equal(prefixedError.status, 400);
-    assert.ok(prefixedError.body.error?.message?.startsWith('[TestGateway] '), `错误消息应带前缀，实际：${JSON.stringify(prefixedError.body)}`);
-    assert.ok(prefixedError.body.error.message.includes('model 不能为空'), '前缀后应保留原始错误说明');
-    // 清空前缀后恢复原样：前缀是可选的，不能污染默认行为。
+    upstreamFailure = null;
+    assert.equal(disconnected.status, 502);
+    assert.equal(disconnected.body.request_id, 'connection-error');
+    assert.match(disconnected.body.error.message, /^\[TestGateway\] \[request_id=connection-error\] \[code=502\] 无法连接上游：/);
+    await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams/${encodeURIComponent(fallbackResult.body.id)}/reset-health`, {
+      method: 'POST', headers: adminHeaders, body: '{}'
+    });
+    for (const [endpoint, message] of [['/v1/not-found', '接口不存在'], ['/api/admin/not-found', '管理接口不存在']]) {
+      const result = await requestJson(`http://127.0.0.1:${gatewayPort}${endpoint}`, { headers: { 'x-request-id': 'unknown-endpoint' } });
+      assert.equal(result.status, 404);
+      assertJsonError(result, 'unknown-endpoint', '404', message);
+    }
+    // 清空只省略自定义前缀；自动生成的请求 ID 和错误码仍然展示。
     await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
       method: 'PUT', headers: adminHeaders, body: JSON.stringify({ errorPrefix: '' })
     });
@@ -274,7 +369,17 @@ async function main() {
       body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] })
     });
     assert.equal(plainError.status, 400);
-    assert.ok(!plainError.body.error?.message?.includes('[TestGateway]'), `清空前缀后不应再出现前缀，实际：${JSON.stringify(plainError.body)}`);
+    assert.match(plainError.headers['x-request-id'], /^req_[0-9a-f]{16}$/);
+    assertJsonError(plainError, plainError.headers['x-request-id'], '400', 'model 不能为空', '');
+    const invalidRequestId = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST', headers: { ...localHeaders, 'x-request-id': '[invalid request id]' }, body: '{}'
+    });
+    assert.match(invalidRequestId.headers['x-request-id'], /^req_[0-9a-f]{16}$/);
+    assertJsonError(invalidRequestId, invalidRequestId.headers['x-request-id'], '400', 'model 不能为空', '');
+    const errorLogs = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/logs?limit=100`, { headers: adminHeaders });
+    const plainErrorLog = errorLogs.body.items.find((entry) => entry.id === plainError.body.request_id);
+    assert.ok(plainErrorLog, '消息里的请求 ID 应可用于查询请求日志');
+    assert.equal(plainErrorLog.error, 'model 不能为空', '客户端装饰不能改写日志中的原始错误');
     const responsesResponse = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: { Authorization: `Bearer ${config.localApiKeys[0].key}` }, body: JSON.stringify({ model: 'test-local', instructions: 'Be concise', input: 'hello responses', max_output_tokens: 40 })
     });
@@ -396,6 +501,7 @@ async function main() {
     });
     assert.equal(concurrentDenied.status, 429, JSON.stringify(concurrentDenied.body));
     assert.equal(concurrentDenied.headers['x-request-id'], 'concurrency-denied-001');
+    assertJsonError(concurrentDenied, 'concurrency-denied-001', '429', '当前模型请求并发数已达到上限', '');
     assert.equal(concurrentDenied.headers['retry-after'], '1');
     assert.equal(observedRequestIds.length, observedBeforeConcurrentDenied);
     const slowResult = await slowRequest;
@@ -418,6 +524,7 @@ async function main() {
     });
     assert.equal(rateDenied.status, 429, JSON.stringify(rateDenied.body));
     assert.equal(rateDenied.headers['x-request-id'], 'rate-denied-001');
+    assertJsonError(rateDenied, 'rate-denied-001', '429', '该本地 API Key 已达到每分钟请求上限', '');
     assert.ok(Number(rateDenied.headers['retry-after']) >= 1);
     assert.equal(observedRequestIds.length, observedBeforeRateDenied);
     const unlimitedSettings = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
@@ -450,6 +557,7 @@ async function main() {
       headers: { Authorization: `Bearer ${config.localApiKeys[0].key}` }
     });
     assert.equal(disabledRequest.status, 401);
+    assertJsonError(disabledRequest, disabledRequest.headers['x-request-id'], '401', '需要有效的本地 API Key', '');
     const enabledKey = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/local-keys/${encodeURIComponent(keyId)}`, {
       method: 'PUT', headers: adminHeaders, body: JSON.stringify({ name: 're-enabled-key', enabled: true })
     });
