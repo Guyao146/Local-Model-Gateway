@@ -58,6 +58,7 @@ function writeSse(res, data, eventName) {
 async function main() {
   const received = [];
   let rejectNativeResponses = false;
+  let customFrames = null;
   const upstream = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -65,6 +66,13 @@ async function main() {
     if (req.url === '/v1/models') {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ object: 'list', data: [{ id: 'native-agent-model' }] }));
+      return;
+    }
+    if (req.url === '/v1/chat/completions') {
+      res.setHeader('Content-Type', 'text/event-stream');
+      writeSse(res, { id: 'chat_test', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_chat', type: 'function', function: { name: 'lookup', arguments: '{}' } }] }, finish_reason: null }] });
+      writeSse(res, { id: 'chat_test', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
+      res.end('data: [DONE]\n\n');
       return;
     }
     if (req.url !== '/v1/responses') {
@@ -84,6 +92,11 @@ async function main() {
     if (rejectNativeResponses) {
       res.statusCode = 404;
       res.end(JSON.stringify({ error: { message: 'native responses unavailable' } }));
+      return;
+    }
+    if (body.stream && customFrames) {
+      for (const frame of customFrames) writeSse(res, frame, frame.type);
+      res.end();
       return;
     }
     if (!body.stream) {
@@ -119,11 +132,12 @@ async function main() {
       return;
     }
     if (Array.isArray(body.tools) && body.tools.some((tool) => tool.type === 'function')) {
-      // 模拟宽松上游：response.id 是数字、function_call 不给 call_id。
-      // 网关必须归一化为字符串，否则 Chat 客户端会报 Expected 'id' to be a string.
+      // response.id 为数字；工具的 item.id 与 call_id 不同是正常的 Responses 形态。
+      // 必须归一化 chunk ID，并把增量关联到同一 Chat 工具 index。
       writeSse(res, { type: 'response.created', response: { id: 12345, object: 'response', status: 'in_progress', model: body.model } }, 'response.created');
-      writeSse(res, { type: 'response.output_item.added', item: { type: 'function_call', name: body.tools[0].name, arguments: '' } }, 'response.output_item.added');
-      writeSse(res, { type: 'response.function_call_arguments.delta', item_id: 'call_function_stream', delta: '{"key":"weather"}' }, 'response.function_call_arguments.delta');
+      writeSse(res, { type: 'response.output_item.added', output_index: 1, item: { type: 'function_call', id: 'fc_function_stream', call_id: 'call_function_stream', name: body.tools[0].name, arguments: '' } }, 'response.output_item.added');
+      writeSse(res, { type: 'response.function_call_arguments.delta', output_index: 1, item_id: 'fc_function_stream', delta: '{"key":"weather"}' }, 'response.function_call_arguments.delta');
+      writeSse(res, { type: 'response.output_item.done', output_index: 1, item: { type: 'function_call', id: 'fc_function_stream', call_id: 'call_function_stream', name: body.tools[0].name, arguments: '{"key":"weather"}' } }, 'response.output_item.done');
       writeSse(res, { type: 'response.completed', response: { id: 12345, object: 'response', status: 'completed', usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 } } }, 'response.completed');
       res.end();
       return;
@@ -200,11 +214,16 @@ async function main() {
     assert.deepEqual(functionReasoningCalls[0].body.tools, functionReasoningRequest.tools);
     assert.equal(functionReasoningCalls[0].body.reasoning_effort, undefined);
     assert.deepEqual(functionReasoningCalls[0].body.reasoning, { effort: 'medium' });
+    const nativeRoute = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/routes`, {
+      method: 'POST', headers: adminHeaders,
+      body: JSON.stringify({ localModel: 'chat-native', upstreamId: added.json.id, upstreamModel: 'native-agent-model', responsesMode: 'native' })
+    });
+    assert.equal(nativeRoute.status, 201);
     const chatFunctionResponse = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
       method: 'POST',
       headers: localHeaders,
       body: JSON.stringify({
-        model: 'agent-local',
+        model: 'chat-native',
         messages: [{ role: 'user', content: 'Use the lookup function' }],
         tools: [{ type: 'function', function: { name: 'lookup', description: 'Look up a value', parameters: { type: 'object', properties: { key: { type: 'string' } } } } }],
         reasoning_effort: 'medium'
@@ -222,7 +241,7 @@ async function main() {
       method: 'POST',
       headers: localHeaders,
       body: JSON.stringify({
-        model: 'agent-local',
+        model: 'chat-native',
         stream: true,
         messages: [{ role: 'user', content: 'Use the lookup function' }],
         tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object', properties: {} } } }],
@@ -241,25 +260,96 @@ async function main() {
       .filter((data) => data && data !== '[DONE]')
       .map((data) => JSON.parse(data));
     assert.ok(streamChunks.length > 0, '应至少返回一个 chunk');
+    const toolStates = new Map();
     for (const chunk of streamChunks) {
       assert.equal(typeof chunk.id, 'string', `chunk.id 必须是字符串，实际为 ${JSON.stringify(chunk.id)}`);
       for (const choice of chunk.choices || []) {
-        const started = (choice.delta?.tool_calls || []).filter((call) => call.type || call.function?.name);
-        for (const call of started) {
-          assert.equal(typeof call.id, 'string', `tool_call.id 必须是字符串，实际为 ${JSON.stringify(call.id)}`);
+        for (const call of choice.delta?.tool_calls || []) {
+          if (!toolStates.has(call.index)) {
+            assert.equal(typeof call.id, 'string', '每个 index 首次出现必须有字符串 id');
+            assert.equal(call.function.name, 'lookup');
+            toolStates.set(call.index, { id: call.id, arguments: '' });
+          }
+          toolStates.get(call.index).arguments += call.function?.arguments || '';
         }
       }
     }
+    assert.equal(toolStates.size, 1, '一个 Responses 调用不能拆成多个 Chat index');
+    assert.deepEqual(toolStates.get(0), { id: 'call_function_stream', arguments: '{"key":"weather"}' });
     // 诊断信息应写入请求日志：能从后台 API 拿到该请求的上游路径与输出样本。
     const diagLogs = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/logs?limit=50`, { headers: adminHeaders });
     assert.equal(diagLogs.status, 200, JSON.stringify(diagLogs.body));
-    const diagEntry = (diagLogs.json.items || []).find((item) => item.stream && item.model === 'agent-local');
+    const diagEntry = (diagLogs.json.items || []).find((item) => item.stream && item.model === 'chat-native');
     assert.ok(diagEntry, '应能在请求日志中找到该流式请求');
     assert.ok(diagEntry.diagnostics, '该请求应携带诊断信息');
     assert.equal(diagEntry.diagnostics.upstreamPath, '/v1/responses');
     assert.equal(diagEntry.diagnostics.nativeResponses, true);
     assert.ok((diagEntry.diagnostics.upstreamResponse || []).length > 0, '应采样上游响应帧');
     assert.ok((diagEntry.diagnostics.output || []).length > 0, '应采样网关输出帧');
+    // 多工具交错、output_index=0、缺失 call_id，以及参数先于 added 到达。
+    const itemA = { type: 'function_call', id: 'fc_a', call_id: 'call_a', name: 'lookup', arguments: '{"a":1}' };
+    const itemB = { type: 'function_call', id: null, call_id: null, name: 'second', arguments: '{"b":2}' };
+    customFrames = [
+      { type: 'response.created', response: { id: 'resp_multi' } },
+      { type: 'response.function_call_arguments.delta', output_index: 0, item_id: 'fc_a', delta: '{"a":' },
+      { type: 'response.output_item.added', output_index: 1, item: { ...itemB, arguments: '' } },
+      { type: 'response.output_item.added', output_index: 0, item: { ...itemA, arguments: '' } },
+      { type: 'response.function_call_arguments.delta', output_index: 1, item_id: null, delta: '{"b":2}' },
+      { type: 'response.function_call_arguments.delta', item_id: 'fc_a', delta: '1}' },
+      { type: 'response.output_item.done', output_index: 0, item: itemA },
+      { type: 'response.output_item.done', output_index: 1, item: itemB },
+      { type: 'response.completed', response: { output: [itemA, itemB] } }
+    ];
+    const multi = await request(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST', headers: localHeaders,
+      body: JSON.stringify({ model: 'chat-native', stream: true, messages: [{ role: 'user', content: 'tools' }] })
+    });
+    customFrames = null;
+    const assembled = new Map();
+    for (const line of multi.body.split('\n').filter((line) => line.startsWith('data: {'))) {
+      const chunk = JSON.parse(line.slice(6));
+      assert.equal(chunk.error, undefined, multi.body);
+      for (const call of chunk.choices?.[0]?.delta?.tool_calls || []) {
+        if (!assembled.has(call.index)) {
+          assert.equal(typeof call.id, 'string');
+          assert.ok(call.id.length > 0);
+          assert.equal(call.type, 'function');
+          assembled.set(call.index, { name: call.function.name, arguments: '' });
+        }
+        assembled.get(call.index).arguments += call.function.arguments;
+      }
+    }
+    assert.equal(assembled.size, 2);
+    assert.deepEqual(assembled.get(0), { name: 'lookup', arguments: '{"a":1}' });
+    assert.deepEqual(assembled.get(1), { name: 'second', arguments: '{"b":2}' });
+    customFrames = [
+      { type: 'response.function_call_arguments.delta', item_id: 'orphan', delta: '{}' },
+      { type: 'response.completed', response: { output: [] } }
+    ];
+    const orphan = await request(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST', headers: localHeaders,
+      body: JSON.stringify({ model: 'chat-native', stream: true, messages: [{ role: 'user', content: 'tools' }] })
+    });
+    customFrames = null;
+    assert.match(orphan.body, /无法转换为 Chat/);
+    assert.doesNotMatch(orphan.body, /"tool_calls"/);
+    // 自动模式下 Chat + tools 不应因思考开关改变端点。
+    for (const thinkingLevel of ['medium', 'off']) {
+      const before = received.length;
+      const chat = await request(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+        method: 'POST', headers: localHeaders,
+        body: JSON.stringify({ model: 'agent-local', stream: true, thinkingLevel,
+          messages: [{ role: 'user', content: 'lookup' }],
+          tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object' } } }] })
+      });
+      assert.equal(chat.status, 200, chat.body);
+      assert.match(chat.body, /call_chat/);
+      const calls = received.slice(before);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, '/v1/chat/completions');
+      assert.equal(calls[0].body.reasoning_effort, thinkingLevel === 'off' ? undefined : 'medium');
+      assert.equal(calls[0].body.reasoning, undefined);
+    }
     const streamResponse = await request(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: { ...localHeaders, 'x-request-id': 'native-agent-stream-001' }, body: JSON.stringify({ ...agentRequest, stream: true })
     });

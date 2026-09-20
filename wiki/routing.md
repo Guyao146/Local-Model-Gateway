@@ -57,13 +57,13 @@
    - **固定站（`fixed`）**：只使用下拉框选定的单个站点。
 4. **接口协议（`responsesMode`，模型级）**：覆盖上游的 `responsesMode`，决定该模型走
    `/v1/responses` 还是 `/v1/chat/completions`。
-   - `auto`（默认）：按上游支持情况自动选择，上游不支持 Responses 时回退到 Chat Completions。
+   - `auto`（默认）：客户端 Chat 请求保持 Chat；客户端 Responses 请求优先 Responses，上游不支持时对允许兼容转换的请求回退到 Chat。
    - `native`：强制 `/v1/responses`；即使上游返回 404/405/501 也**不会**回退到 Chat Completions。
    - `chat`：强制 `/v1/chat/completions`；客户端打 `/v1/responses` 时网关会自动转换请求与响应。
 
    适合同一个站点上不同模型走不同协议（例如某些模型只支持 Chat Completions）。
-   注意：function tools 与 `reasoning_effort` 的组合必须走原生 Responses，此时选 `chat`
-   会直接返回 `unsupported_agent_capability` 错误，而不是降级。
+   注意：客户端 Responses 请求的 function tools 与 `reasoning_effort` 组合仍采用保守策略，选 `chat`
+   会返回 `unsupported_agent_capability`；客户端 Chat 请求不受此限制，开启思考不会自动升级协议。
 
 保存时后端 `saveModelSelections` 会把每个选择合成（或复用）一条
 `managedBy: 'model-selector'` 的托管路由：

@@ -21,8 +21,8 @@
 
 转发到 OpenAI 兼容上游的 `/v1/chat/completions`，或经协议转换转发到 Anthropic 上游的 `/v1/messages`。
 支持 `stream: true` 的 SSE 流式响应。
-当请求同时包含 function tools 与非 `none` 的 `reasoning_effort` 时，OpenAI 上游改用原生
-`/v1/responses`，响应再转换回 Chat Completions（含 function tool call 与 SSE 增量）；该组合禁止改发上游 `/v1/chat/completions`。
+自动或 Chat 模式下，即使同时包含 function tools 与 `reasoning_effort`，仍使用上游 Chat 接口。
+只有显式选择 `native`（Responses）模式才改用 `/v1/responses`，响应再转换回 Chat Completions（含工具调用与 SSE 增量）。
 
 ### `POST /v1/messages`（Anthropic Messages）
 

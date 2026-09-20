@@ -986,7 +986,7 @@ function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel,
   const nativeResponses = localProtocol === 'responses'
     ? upstream.protocol === 'openai' && responsesMode !== 'chat' && options.forceChat !== true
     : localProtocol === 'openai'
-      && requiresNative
+      && responsesMode === 'native'
       && upstream.protocol === 'openai'
       && responsesMode !== 'chat'
       && options.forceChat !== true;
@@ -1399,17 +1399,54 @@ async function responsesStreamAsOpenAI(response, res, model, diag) {
   let stopped = false;
   let nextToolIndex = 0;
   let usage;
-  const toolIndexes = new Map();
-  const toolArgumentLengths = new Map();
+  const toolAliases = new Map();
+  const tools = [];
   const ensureStarted = () => {
     if (started) return;
     started = true;
     writeSse(res, openAIChunk(model, chunkId, { role: 'assistant' }));
   };
-  const toolKey = (item, parsed) => String(item?.call_id || item?.id || parsed?.item_id || parsed?.output_index || '0');
-  const toolIndex = (key) => {
-    if (!toolIndexes.has(key)) toolIndexes.set(key, nextToolIndex++);
-    return toolIndexes.get(key);
+  const getTool = (item, parsed) => {
+    // call_id 是调用标识，item_id 是输出项标识；它们是别名而不是两个工具。
+    // 给不同类型的键加前缀，避免 output_index=0 与字符串 ID "0" 冲突。
+    const aliases = [
+      ['item', item?.id], ['item', parsed.item_id],
+      ['output', parsed.output_index], ['call', item?.call_id]
+    ].filter(([, value]) => value !== undefined && value !== null)
+      .map(([kind, value]) => `${kind}:${responseId(value, '')}`);
+    let tool = aliases.map((key) => toolAliases.get(key)).find(Boolean);
+    if (!tool) {
+      tool = { index: nextToolIndex++, id: null, name: '', arguments: '', sent: 0, started: false };
+      tools.push(tool);
+    }
+    for (const key of aliases) toolAliases.set(key, tool);
+    if (item) {
+      if (!tool.started) tool.id = responseId(item.call_id ?? item.id, tool.id || `call_${crypto.randomBytes(8).toString('hex')}`);
+      if (typeof item.name === 'string') tool.name = item.name;
+    }
+    return tool;
+  };
+  const emitTool = (tool) => {
+    // 增量先到时暂存参数，等 added/done 提供名称再发首帧，不能发缺 ID 的新 index。
+    if (!tool.name) return;
+    const delta = { index: tool.index, function: { arguments: tool.arguments.slice(tool.sent) } };
+    if (!tool.started) {
+      delta.id = tool.id;
+      delta.type = 'function';
+      delta.function.name = tool.name;
+    } else if (tool.sent === tool.arguments.length) return;
+    writeSse(res, openAIChunk(model, chunkId, { tool_calls: [delta] }));
+    tool.started = true;
+    tool.sent = tool.arguments.length;
+  };
+  const updateTool = (item, parsed) => {
+    const tool = getTool(item, parsed);
+    const full = typeof item.arguments === 'string' ? item.arguments : '';
+    if (full.length > tool.arguments.length) {
+      if (!full.startsWith(tool.arguments)) throw new Error('Responses 工具调用完整参数与增量不一致');
+      tool.arguments = full;
+    }
+    emitTool(tool);
   };
   await consumeSse(response, async ({ name, data }) => {
     if (data === '[DONE]') return;
@@ -1431,45 +1468,27 @@ async function responsesStreamAsOpenAI(response, res, model, diag) {
     }
     if (eventName === 'response.output_item.added' && parsed.item?.type === 'function_call') {
       ensureStarted();
-      const key = toolKey(parsed.item, parsed);
-      const index = toolIndex(key);
-      const initialArguments = typeof parsed.item.arguments === 'string' ? parsed.item.arguments : '';
-      toolArgumentLengths.set(key, initialArguments.length);
-      writeSse(res, openAIChunk(model, chunkId, {
-        tool_calls: [{
-          index,
-          // Chat 协议要求 tool_call.id 是字符串；上游不给 call_id 时必须兜底生成，
-          // 字段缺失会让客户端报 Expected 'id' to be a string.
-          id: responseId(parsed.item.call_id ?? parsed.item.id, `call_${crypto.randomBytes(8).toString('hex')}`),
-          type: 'function',
-          function: { name: parsed.item.name || '', arguments: initialArguments }
-        }]
-      }));
+      updateTool(parsed.item, parsed);
       return;
     }
     if (eventName === 'response.function_call_arguments.delta') {
       ensureStarted();
-      const key = toolKey(null, parsed);
-      const index = toolIndex(key);
-      const delta = parsed.delta || '';
-      toolArgumentLengths.set(key, (toolArgumentLengths.get(key) || 0) + delta.length);
-      writeSse(res, openAIChunk(model, chunkId, { tool_calls: [{ index, function: { arguments: delta } }] }));
+      const tool = getTool(null, parsed);
+      tool.arguments += typeof parsed.delta === 'string' ? parsed.delta : '';
+      emitTool(tool);
       return;
     }
     if (eventName === 'response.output_item.done' && parsed.item?.type === 'function_call') {
       ensureStarted();
-      const key = toolKey(parsed.item, parsed);
-      const index = toolIndex(key);
-      const fullArguments = typeof parsed.item.arguments === 'string' ? parsed.item.arguments : '';
-      const sentLength = toolArgumentLengths.get(key) || 0;
-      if (fullArguments.length > sentLength) {
-        writeSse(res, openAIChunk(model, chunkId, { tool_calls: [{ index, function: { arguments: fullArguments.slice(sentLength) } }] }));
-        toolArgumentLengths.set(key, fullArguments.length);
-      }
+      updateTool(parsed.item, parsed);
       return;
     }
     if (eventName === 'response.completed' || eventName === 'response.incomplete') {
       ensureStarted();
+      for (const [output_index, item] of (parsed.response?.output || []).entries()) {
+        if (item.type === 'function_call') updateTool(item, { output_index });
+      }
+      if (tools.some((tool) => !tool.started)) throw new Error('Responses 工具调用缺少名称或关联信息，无法转换为 Chat');
       const responseUsage = parsed.response?.usage || {};
       const promptTokens = responseUsage.input_tokens || 0;
       const completionTokens = responseUsage.output_tokens || 0;
@@ -1478,7 +1497,7 @@ async function responsesStreamAsOpenAI(response, res, model, diag) {
         completion_tokens: completionTokens,
         total_tokens: responseUsage.total_tokens || promptTokens + completionTokens
       };
-      const finishReason = toolIndexes.size ? 'tool_calls' : (eventName === 'response.incomplete' ? 'length' : 'stop');
+      const finishReason = tools.length ? 'tool_calls' : (eventName === 'response.incomplete' ? 'length' : 'stop');
       writeSse(res, openAIChunk(model, chunkId, {}, finishReason, usage));
       writeSse(res, '[DONE]');
       stopped = true;
@@ -1486,7 +1505,8 @@ async function responsesStreamAsOpenAI(response, res, model, diag) {
   });
   if (!stopped && !res.writableEnded) {
     ensureStarted();
-    writeSse(res, openAIChunk(model, chunkId, {}, toolIndexes.size ? 'tool_calls' : 'stop', usage));
+    if (tools.some((tool) => !tool.started)) throw new Error('Responses 工具调用缺少名称或关联信息，无法转换为 Chat');
+    writeSse(res, openAIChunk(model, chunkId, {}, tools.length ? 'tool_calls' : 'stop', usage));
     writeSse(res, '[DONE]');
   }
   if (!res.writableEnded) res.end();

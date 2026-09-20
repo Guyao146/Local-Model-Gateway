@@ -91,7 +91,7 @@ const chatNativeResponse = responsesResponseToOpenAI({
 }, 'gpt-native');
 assert.equal(chatNativeResponse.choices[0].message.tool_calls[0].function.name, 'lookup');
 assert.equal(chatNativeResponse.choices[0].finish_reason, 'tool_calls');
-assert.equal(chatRequestRequiresNative({ messages: [{ role: 'user', content: 'hello' }], tools: [{ type: 'function', function: { name: 'lookup' } }], reasoning_effort: 'medium' }), true);
+assert.equal(chatRequestRequiresNative({ messages: [{ role: 'user', content: 'hello' }], tools: [{ type: 'function', function: { name: 'lookup' } }], reasoning_effort: 'medium' }), false);
 assert.equal(chatRequestRequiresNative({ messages: [{ role: 'user', content: 'hello' }], tools: [{ type: 'function', function: { name: 'lookup' } }], reasoning_effort: 'none' }), false);
 assert.equal(responseRequestRequiresNative({ model: 'plain', input: 'hello', max_output_tokens: 20 }), false);
 assert.equal(responseRequestRequiresNative({ model: 'tools', input: 'hello', tools: [{ type: 'function', name: 'lookup' }], reasoning_effort: 'none' }), false);

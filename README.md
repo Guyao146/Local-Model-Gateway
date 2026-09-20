@@ -256,7 +256,7 @@ http://127.0.0.1:8787/v1
 
 支持常见的 Responses 请求字段 `input`、`instructions`、`max_output_tokens`、`tools` 和 `stream`。OpenAI 上游默认优先使用原生 `/v1/responses`；普通请求在自动模式下可于原生端点不可用时兼容回退。Agent 专有字段以及“function tools + 非 `none` 的 `reasoning_effort`”必须使用原生 Responses，禁止有损回退到 `/v1/chat/completions`。非流式示例：
 
-客户端即使调用网关的 `/v1/chat/completions`，只要请求同时携带 function tools 与非 `none` 的 `reasoning_effort`，网关也会转换请求并改用上游 `/v1/responses`，随后把结果转换回 Chat Completions 格式。若对应上游被设为“仅 Chat”或没有可用的 Responses 端点，网关会返回 `unsupported_agent_capability`。
+客户端调用网关的 `/v1/chat/completions` 时，自动或 Chat 模式保持使用上游 Chat 接口，function tools 与 `reasoning_effort` 可以同时传递，不会因为开启思考切换协议。显式选择 `native`（Responses）模式时，网关才将 Chat 请求转换到 `/v1/responses`，再将结果转回 Chat；工具输出项 ID、调用 ID 和输出序号会关联到同一个 Chat 工具 index，保证工具首帧携带字符串 ID。
 
 ```bash
 curl http://127.0.0.1:8787/v1/responses ^

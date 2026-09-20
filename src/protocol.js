@@ -403,12 +403,9 @@ function responseRequestRequiresNative(input) {
 }
 
 function chatRequestRequiresNative(input) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
-  const hasFunctionTools = Array.isArray(input.tools) && input.tools.some((tool) => tool?.type === 'function' && tool.function);
-  const reasoningEffort = input.reasoning_effort;
-  return hasFunctionTools
-    && reasoningEffort !== undefined
-    && String(reasoningEffort).trim().toLowerCase() !== 'none';
+  // Chat 的 function tools 与 reasoning_effort 可以同时使用；不能据此升级协议。
+  // 是否使用 Responses 由显式的接口协议配置决定。
+  return false;
 }
 
 function responseInputToOpenAI(input, model) {
