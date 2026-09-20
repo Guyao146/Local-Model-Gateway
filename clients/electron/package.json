@@ -1,6 +1,6 @@
 {
   "name": "local-model-gateway-electron",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "private": true,
   "description": "Electron desktop client for Local Model Gateway",
   "main": "main.js",

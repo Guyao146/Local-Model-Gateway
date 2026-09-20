@@ -58,6 +58,10 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 | client | 不主动添加，遵循客户端显式设置 | 不主动添加，遵循客户端显式设置 |
 | auto / off | 不主动添加 | 不主动添加（上游声明不支持思考时也不添加） |
 
+> 参数形态与目标端点自动匹配：发往 `/v1/responses` 的请求一律使用 `reasoning: { effort }`，
+> 发往 `/v1/chat/completions` 的请求一律使用 `reasoning_effort`。客户端传入的另一种形态会被
+> 网关转换，避免上游以「调用的接口类型和传入的参数不匹配」拒绝请求。
+
 ---
 
 ## 管理接口（`/api/admin/*`）

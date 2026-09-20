@@ -918,6 +918,31 @@ function requestIdFromRequest(req) {
   return /^[A-Za-z0-9._:-]{1,120}$/.test(supplied) ? supplied : `req_${crypto.randomBytes(8).toString('hex')}`;
 }
 
+// /v1/responses 与 /v1/chat/completions 的思考参数形态不同：前者用 reasoning: { effort }，
+// 后者用 reasoning_effort。网关注入或客户端透传的参数必须与实际调用的端点匹配，
+// 否则上游会以“调用的接口类型和传入的参数不匹配”拒绝请求。
+function normalizeReasoningForEndpoint(body, nativeResponses, upstreamProtocol) {
+  const result = { ...body };
+  if (nativeResponses) {
+    if (result.reasoning_effort !== undefined) {
+      const effort = String(result.reasoning_effort).trim().toLowerCase();
+      // 'none' 不是 /v1/responses 的合法 effort 值，直接省略；其余值装入 reasoning 对象。
+      if (effort && effort !== 'none' && !result.reasoning) result.reasoning = { effort };
+      delete result.reasoning_effort;
+    }
+  } else if (upstreamProtocol === 'openai') {
+    if (result.reasoning !== undefined) {
+      const effort = result.reasoning?.effort;
+      if (result.reasoning_effort === undefined && typeof effort === 'string') {
+        const value = effort.trim().toLowerCase();
+        if (value && value !== 'none') result.reasoning_effort = value;
+      }
+      delete result.reasoning;
+    }
+  }
+  return result;
+}
+
 function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel, requestId, options = {}) {
   const model = upstreamModel || safeModel(localInput);
   const modelEntry = modelEntryFor(upstream, model);
@@ -953,6 +978,7 @@ function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel,
   } else {
     body = localProtocol === 'anthropic' ? anthropicToOpenAI(inputWithThinking, model) : { ...openAIInput, model };
   }
+  body = normalizeReasoningForEndpoint(body, nativeResponses, upstream.protocol);
   return {
     endpoint: resolveEndpoint(upstream.baseUrl, nativeResponses ? '/v1/responses' : upstream.protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'),
     body,

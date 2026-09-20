@@ -303,6 +303,7 @@ Responses 流式请求会返回 `response.created`、`response.output_text.delta
 - 上游明确声明不支持思考时：不会添加思考参数
 - 上游能力未知时：后台仍允许配置；如果客户端没有显式思考参数，网关会按选择的强度尝试发送
 - 客户端请求显式提供 `reasoning_effort` 或 `thinking` 时，优先使用客户端值
+- 参数形态与目标端点自动匹配：发往 `/v1/responses` 的一律使用 `reasoning: { effort }`，发往 `/v1/chat/completions` 的一律使用 `reasoning_effort`，客户端传入的另一种形态会被转换，避免上游以「调用的接口类型和传入的参数不匹配」拒绝请求
 
 网关会识别常见的模型能力字段，包括 `supports_thinking`、`supports_reasoning`、`thinking_levels`、`reasoning_effort`、`capabilities.thinking`、`supported_parameters` 等；部分常见 Claude 3.7/4、o1/o3/o4、GPT-5 模型也会按模型名做保守推断。不同站点的私有字段可能需要后续适配。
 

@@ -73,6 +73,13 @@ async function main() {
       return;
     }
     const body = received.at(-1).body;
+    // 严格按 OpenAI Responses 规范校验：/v1/responses 只接受 reasoning: { effort }。
+    // 如果还能在这里看到 Chat 协议的 reasoning_effort，说明网关没有按目标端点归一化参数。
+    if (body.reasoning_effort !== undefined) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: { message: '调用的接口类型和传入的参数不匹配：/v1/responses 不支持 reasoning_effort' } }));
+      return;
+    }
     res.setHeader('Content-Type', body.stream ? 'text/event-stream' : 'application/json');
     if (rejectNativeResponses) {
       res.statusCode = 404;
@@ -189,7 +196,8 @@ async function main() {
     assert.equal(functionReasoningCalls.length, 1);
     assert.equal(functionReasoningCalls[0].url, '/v1/responses');
     assert.deepEqual(functionReasoningCalls[0].body.tools, functionReasoningRequest.tools);
-    assert.equal(functionReasoningCalls[0].body.reasoning_effort, 'medium');
+    assert.equal(functionReasoningCalls[0].body.reasoning_effort, undefined);
+    assert.deepEqual(functionReasoningCalls[0].body.reasoning, { effort: 'medium' });
     const chatFunctionResponse = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
       method: 'POST',
       headers: localHeaders,
@@ -205,7 +213,8 @@ async function main() {
     assert.equal(chatFunctionResponse.json.choices[0].message.tool_calls[0].function.name, 'lookup');
     const chatFunctionCall = received.at(-1);
     assert.equal(chatFunctionCall.url, '/v1/responses');
-    assert.equal(chatFunctionCall.body.reasoning_effort, 'medium');
+    assert.equal(chatFunctionCall.body.reasoning_effort, undefined);
+    assert.deepEqual(chatFunctionCall.body.reasoning, { effort: 'medium' });
     assert.equal(chatFunctionCall.body.tools[0].name, 'lookup');
     const chatFunctionStream = await request(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
       method: 'POST',
@@ -230,7 +239,19 @@ async function main() {
     assert.match(streamResponse.body, /"type":"computer_call"/);
     assert.match(streamResponse.body, /event: response\.completed/);
     assert.equal(streamResponse.headers['x-request-id'], 'native-agent-stream-001');
+    // 反向归一化：客户端给 /v1/chat/completions 发 Responses 形态的 reasoning 对象时，应转成 Chat 的 reasoning_effort。
+    const reasoningObjectCallsBefore = received.length;
+    await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST',
+      headers: localHeaders,
+      body: JSON.stringify({ model: 'agent-local', messages: [{ role: 'user', content: 'hello' }], reasoning: { effort: 'low' } })
+    });
+    const reasoningObjectCall = received.slice(reasoningObjectCallsBefore).find((item) => item.url === '/v1/chat/completions');
+    assert.ok(reasoningObjectCall, '应命中 /v1/chat/completions');
+    assert.equal(reasoningObjectCall.body.reasoning_effort, 'low');
+    assert.equal(reasoningObjectCall.body.reasoning, undefined);
     rejectNativeResponses = true;
+    const callsAfterReject = received.length;
     const callsBeforeUnsupportedFunctionReasoning = received.length;
     const unsupportedFunctionReasoning = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: localHeaders, body: JSON.stringify(functionReasoningRequest)
@@ -247,7 +268,7 @@ async function main() {
     assert.equal(unsupported.status, 400, JSON.stringify(unsupported.json));
     assert.equal(unsupported.json.error.type, 'unsupported_agent_capability');
     assert.match(unsupported.json.error.message, /不支持此请求所需的 Responses API 原生能力/);
-    assert.equal(received.some((item) => item.url === '/v1/chat/completions'), false);
+    assert.equal(received.slice(callsAfterReject).some((item) => item.url === '/v1/chat/completions'), false);
     console.log('native responses integration tests passed');
   } catch (error) {
     throw new Error(`${error.message}\n${stderr}`);
