@@ -119,10 +119,12 @@ async function main() {
       return;
     }
     if (Array.isArray(body.tools) && body.tools.some((tool) => tool.type === 'function')) {
-      writeSse(res, { type: 'response.created', response: { id: 'resp_function_stream', object: 'response', status: 'in_progress', model: body.model } }, 'response.created');
-      writeSse(res, { type: 'response.output_item.added', item: { id: 'call_function_stream', call_id: 'call_function_stream', type: 'function_call', name: body.tools[0].name, arguments: '' } }, 'response.output_item.added');
+      // 模拟宽松上游：response.id 是数字、function_call 不给 call_id。
+      // 网关必须归一化为字符串，否则 Chat 客户端会报 Expected 'id' to be a string.
+      writeSse(res, { type: 'response.created', response: { id: 12345, object: 'response', status: 'in_progress', model: body.model } }, 'response.created');
+      writeSse(res, { type: 'response.output_item.added', item: { type: 'function_call', name: body.tools[0].name, arguments: '' } }, 'response.output_item.added');
       writeSse(res, { type: 'response.function_call_arguments.delta', item_id: 'call_function_stream', delta: '{"key":"weather"}' }, 'response.function_call_arguments.delta');
-      writeSse(res, { type: 'response.completed', response: { id: 'resp_function_stream', object: 'response', status: 'completed', usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 } } }, 'response.completed');
+      writeSse(res, { type: 'response.completed', response: { id: 12345, object: 'response', status: 'completed', usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 } } }, 'response.completed');
       res.end();
       return;
     }
@@ -231,6 +233,23 @@ async function main() {
     assert.match(chatFunctionStream.body, /"tool_calls"/);
     assert.match(chatFunctionStream.body, /lookup/);
     assert.match(chatFunctionStream.body, /data: \[DONE\]/);
+    // 回归护栏：上游返回数字 response.id 且 function_call 无 call_id 时，
+    // 转回 Chat 流后每个 chunk.id 与工具调用首帧的 tool_call.id 都必须是字符串。
+    const streamChunks = chatFunctionStream.body.split('\n\n')
+      .filter((frame) => frame.startsWith('data:'))
+      .map((frame) => frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n'))
+      .filter((data) => data && data !== '[DONE]')
+      .map((data) => JSON.parse(data));
+    assert.ok(streamChunks.length > 0, '应至少返回一个 chunk');
+    for (const chunk of streamChunks) {
+      assert.equal(typeof chunk.id, 'string', `chunk.id 必须是字符串，实际为 ${JSON.stringify(chunk.id)}`);
+      for (const choice of chunk.choices || []) {
+        const started = (choice.delta?.tool_calls || []).filter((call) => call.type || call.function?.name);
+        for (const call of started) {
+          assert.equal(typeof call.id, 'string', `tool_call.id 必须是字符串，实际为 ${JSON.stringify(call.id)}`);
+        }
+      }
+    }
     const streamResponse = await request(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: { ...localHeaders, 'x-request-id': 'native-agent-stream-001' }, body: JSON.stringify({ ...agentRequest, stream: true })
     });

@@ -27,6 +27,7 @@ const {
   normalizeResponsesEvent,
   normalizeResponsesIds,
   textFromContent,
+  responseId,
   responseRequestRequiresNative,
   chatRequestRequiresNative
 } = require('./protocol');
@@ -1359,7 +1360,8 @@ async function openAIStreamAsResponses(response, res, model) {
 }
 
 async function responsesStreamAsOpenAI(response, res, model) {
-  let responseId = `chatcmpl_${crypto.randomBytes(8).toString('hex')}`;
+  // 局部变量刻意命名为 chunkId，避免遮蔽导入的 responseId() 归一化函数。
+  let chunkId = `chatcmpl_${crypto.randomBytes(8).toString('hex')}`;
   let started = false;
   let stopped = false;
   let nextToolIndex = 0;
@@ -1369,7 +1371,7 @@ async function responsesStreamAsOpenAI(response, res, model) {
   const ensureStarted = () => {
     if (started) return;
     started = true;
-    writeSse(res, openAIChunk(model, responseId, { role: 'assistant' }));
+    writeSse(res, openAIChunk(model, chunkId, { role: 'assistant' }));
   };
   const toolKey = (item, parsed) => String(item?.call_id || item?.id || parsed?.item_id || parsed?.output_index || '0');
   const toolIndex = (key) => {
@@ -1382,13 +1384,15 @@ async function responsesStreamAsOpenAI(response, res, model) {
     try { parsed = JSON.parse(data); } catch { return; }
     const eventName = name || parsed.type;
     if (eventName === 'response.created') {
-      responseId = parsed.response?.id || responseId;
+      // 上游 response.id 可能是 null/数字/对象（部分聚合站），归一为字符串，
+      // 否则后续每个 chunk 都带着非字符串 id，客户端反序列化直接失败。
+      chunkId = responseId(parsed.response?.id, chunkId);
       ensureStarted();
       return;
     }
     if (eventName === 'response.output_text.delta') {
       ensureStarted();
-      writeSse(res, openAIChunk(model, responseId, { content: parsed.delta || '' }));
+      writeSse(res, openAIChunk(model, chunkId, { content: parsed.delta || '' }));
       return;
     }
     if (eventName === 'response.output_item.added' && parsed.item?.type === 'function_call') {
@@ -1397,10 +1401,12 @@ async function responsesStreamAsOpenAI(response, res, model) {
       const index = toolIndex(key);
       const initialArguments = typeof parsed.item.arguments === 'string' ? parsed.item.arguments : '';
       toolArgumentLengths.set(key, initialArguments.length);
-      writeSse(res, openAIChunk(model, responseId, {
+      writeSse(res, openAIChunk(model, chunkId, {
         tool_calls: [{
           index,
-          id: parsed.item.call_id || parsed.item.id,
+          // Chat 协议要求 tool_call.id 是字符串；上游不给 call_id 时必须兜底生成，
+          // 字段缺失会让客户端报 Expected 'id' to be a string.
+          id: responseId(parsed.item.call_id ?? parsed.item.id, `call_${crypto.randomBytes(8).toString('hex')}`),
           type: 'function',
           function: { name: parsed.item.name || '', arguments: initialArguments }
         }]
@@ -1413,7 +1419,7 @@ async function responsesStreamAsOpenAI(response, res, model) {
       const index = toolIndex(key);
       const delta = parsed.delta || '';
       toolArgumentLengths.set(key, (toolArgumentLengths.get(key) || 0) + delta.length);
-      writeSse(res, openAIChunk(model, responseId, { tool_calls: [{ index, function: { arguments: delta } }] }));
+      writeSse(res, openAIChunk(model, chunkId, { tool_calls: [{ index, function: { arguments: delta } }] }));
       return;
     }
     if (eventName === 'response.output_item.done' && parsed.item?.type === 'function_call') {
@@ -1423,7 +1429,7 @@ async function responsesStreamAsOpenAI(response, res, model) {
       const fullArguments = typeof parsed.item.arguments === 'string' ? parsed.item.arguments : '';
       const sentLength = toolArgumentLengths.get(key) || 0;
       if (fullArguments.length > sentLength) {
-        writeSse(res, openAIChunk(model, responseId, { tool_calls: [{ index, function: { arguments: fullArguments.slice(sentLength) } }] }));
+        writeSse(res, openAIChunk(model, chunkId, { tool_calls: [{ index, function: { arguments: fullArguments.slice(sentLength) } }] }));
         toolArgumentLengths.set(key, fullArguments.length);
       }
       return;
@@ -1439,14 +1445,14 @@ async function responsesStreamAsOpenAI(response, res, model) {
         total_tokens: responseUsage.total_tokens || promptTokens + completionTokens
       };
       const finishReason = toolIndexes.size ? 'tool_calls' : (eventName === 'response.incomplete' ? 'length' : 'stop');
-      writeSse(res, openAIChunk(model, responseId, {}, finishReason, usage));
+      writeSse(res, openAIChunk(model, chunkId, {}, finishReason, usage));
       writeSse(res, '[DONE]');
       stopped = true;
     }
   });
   if (!stopped && !res.writableEnded) {
     ensureStarted();
-    writeSse(res, openAIChunk(model, responseId, {}, toolIndexes.size ? 'tool_calls' : 'stop', usage));
+    writeSse(res, openAIChunk(model, chunkId, {}, toolIndexes.size ? 'tool_calls' : 'stop', usage));
     writeSse(res, '[DONE]');
   }
   if (!res.writableEnded) res.end();

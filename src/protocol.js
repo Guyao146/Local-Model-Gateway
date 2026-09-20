@@ -664,6 +664,7 @@ module.exports = {
   normalizeResponsesIds,
   responsesResponseSkeleton,
   textFromContent,
+  responseId,
   responseRequestRequiresNative,
   chatRequestRequiresNative
 };
