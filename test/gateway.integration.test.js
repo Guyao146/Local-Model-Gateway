@@ -146,12 +146,15 @@ async function main() {
     assert.equal(initialSettings.status, 200, JSON.stringify(initialSettings.body));
     assert.equal(initialSettings.body.maxFallbackAttempts, 0);
     const updatedSettings = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
-      method: 'PUT', headers: adminHeaders, body: JSON.stringify({ upstreamTimeoutMs: 120000, maxFallbackAttempts: 1, retryDelayMs: 0, circuitBreakerFailureThreshold: 1, circuitBreakerCooldownMs: 60000 })
+      method: 'PUT', headers: adminHeaders, body: JSON.stringify({ upstreamTimeoutMs: 120000, maxFallbackAttempts: 1, retryDelayMs: 0, circuitBreakerFailureThreshold: 1, circuitBreakerCooldownMs: 60000, errorPrefix: '[TestGateway]' })
     });
     assert.equal(updatedSettings.status, 200, JSON.stringify(updatedSettings.body));
     assert.equal(updatedSettings.body.upstreamTimeoutMs, 120000);
     assert.equal(updatedSettings.body.maxFallbackAttempts, 1);
     assert.equal(updatedSettings.body.circuitBreakerFailureThreshold, 1);
+    assert.equal(updatedSettings.body.errorPrefix, '[TestGateway]');
+    // 自定义错误前缀的实际生效验证放在所有 metrics 计数断言之后，避免额外的
+    // 404 请求污染 totals/byUpstream 计数。
     assert.equal(primaryResult.status, 201, output);
     assert.equal(fallbackResult.status, 201, output);
     assert.equal(primaryResult.body.apiKey.includes('upstream-balance-secret'), false, '管理接口不得返回完整上游 Key');
@@ -252,6 +255,26 @@ async function main() {
     assert.equal(recentUsageExport.status, 200, JSON.stringify(recentUsageExport.body));
     assert.equal(recentUsageExport.body.scope, 'recent');
     assert.equal(recentUsageExport.body.records.length, 3);
+    // —— 自定义错误前缀验证（放在计数断言之后，额外请求不影响上面已断言的计数）——
+    // 用“model 不能为空”这个确定性 400 来验证，不依赖路由/上游健康状态。
+    const localHeaders = { Authorization: `Bearer ${config.localApiKeys[0].key}` };
+    const prefixedError = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST', headers: { ...localHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] })
+    });
+    assert.equal(prefixedError.status, 400);
+    assert.ok(prefixedError.body.error?.message?.startsWith('[TestGateway] '), `错误消息应带前缀，实际：${JSON.stringify(prefixedError.body)}`);
+    assert.ok(prefixedError.body.error.message.includes('model 不能为空'), '前缀后应保留原始错误说明');
+    // 清空前缀后恢复原样：前缀是可选的，不能污染默认行为。
+    await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
+      method: 'PUT', headers: adminHeaders, body: JSON.stringify({ errorPrefix: '' })
+    });
+    const plainError = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST', headers: { ...localHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] })
+    });
+    assert.equal(plainError.status, 400);
+    assert.ok(!plainError.body.error?.message?.includes('[TestGateway]'), `清空前缀后不应再出现前缀，实际：${JSON.stringify(plainError.body)}`);
     const responsesResponse = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: { Authorization: `Bearer ${config.localApiKeys[0].key}` }, body: JSON.stringify({ model: 'test-local', instructions: 'Be concise', input: 'hello responses', max_output_tokens: 40 })
     });

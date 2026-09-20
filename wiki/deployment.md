@@ -109,6 +109,12 @@ Authentik 配置要点（详见 README）：
 | 熔断冷却 `circuitBreakerCooldownMs` | 1000–3600000 ms | 60000 |
 | 最大并发请求 `maxConcurrentRequests` | 0–1000（0 不限） | 0 |
 | 每 Key 每分钟请求 `requestsPerMinute` | 0–10000（0 不限） | 0 |
+| 错误消息前缀 `errorPrefix` | 任意文本，最长 60 字符（留空不加） | 空字符串 |
+
+错误消息前缀只作用于**返回给客户端的错误响应**（如 400/401/404/429/502，
+以及上游错误的透传消息）；成功响应和流式数据不受影响。填写后，客户端会看到
+形如 `[SakuraGateway] model 不能为空` 的消息，便于区分错误是网关返回的还是
+上游原样透传的。
 
 非法输入会回退为默认值（`normalizeSettings` 白名单校验）。
 

@@ -42,7 +42,8 @@ function defaultConfig() {
       circuitBreakerFailureThreshold: 3,
       circuitBreakerCooldownMs: 60000,
       maxConcurrentRequests: 0,
-      requestsPerMinute: 0
+      requestsPerMinute: 0,
+      errorPrefix: ''
     }
   };
 }
@@ -62,7 +63,8 @@ function normalizeSettings(settings = {}) {
     circuitBreakerFailureThreshold: integer(settings.circuitBreakerFailureThreshold, defaults.circuitBreakerFailureThreshold, 1, 20),
     circuitBreakerCooldownMs: integer(settings.circuitBreakerCooldownMs, defaults.circuitBreakerCooldownMs, 1000, 3600000),
     maxConcurrentRequests: integer(settings.maxConcurrentRequests, defaults.maxConcurrentRequests, 0, 1000),
-    requestsPerMinute: integer(settings.requestsPerMinute, defaults.requestsPerMinute, 0, 10000)
+    requestsPerMinute: integer(settings.requestsPerMinute, defaults.requestsPerMinute, 0, 10000),
+    errorPrefix: typeof settings.errorPrefix === 'string' ? settings.errorPrefix.trim().slice(0, 60) : ''
   };
 }
 

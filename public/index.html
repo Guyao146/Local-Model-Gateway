@@ -49,7 +49,7 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="backup">配置备份</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.0.7</strong></div>
+        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.0.8</strong></div>
       </aside>
 
       <div class="content">
@@ -108,6 +108,7 @@
           <label>熔断冷却（毫秒）<input id="circuitBreakerCooldownMs" type="number" min="1000" max="3600000" step="1000"></label>
           <label>最大并发请求数<input id="maxConcurrentRequests" type="number" min="0" max="1000" step="1"></label>
           <label>每 Key 每分钟请求数<input id="requestsPerMinute" type="number" min="0" max="10000" step="1"></label>
+          <label>错误消息前缀<input id="errorPrefix" type="text" maxlength="60" placeholder="例如 [SakuraGateway]（留空则不加）"></label>
         </div>
         <div id="settingsMessage" class="form-message"></div>
       </section>

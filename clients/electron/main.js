@@ -162,7 +162,21 @@ async function createWindow() {
     autoHideMenuBar: false,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
-  Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: '设置', submenu: [{ label: '端口设置…', click: openPortSettings }] }, { label: '帮助', submenu: [{ label: '打开日志目录', click: () => require('node:child_process').execFile('explorer.exe', [app.getPath('userData')]) }] }]));
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' },
+        { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' },
+        { role: 'selectAll', label: '全选' }
+      ]
+    },
+    { label: '设置', submenu: [{ label: '端口设置…', click: openPortSettings }] },
+    { label: '帮助', submenu: [{ label: '打开日志目录', click: () => require('node:child_process').execFile('explorer.exe', [app.getPath('userData')]) }] }]));
   await mainWindow.loadURL(statusHtml('正在启动本地模型网关', '正在准备内嵌 Node.js 服务，请稍候…'));
   try {
     await startGateway();

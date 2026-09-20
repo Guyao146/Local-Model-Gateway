@@ -227,7 +227,22 @@ function settingsFromBody(body, existing = config.settings) {
     }
     next[key] = value;
   }
+  if (next.errorPrefix !== undefined && typeof next.errorPrefix !== 'string') {
+    throw new Error('错误消息前缀必须是字符串');
+  }
   return normalizeSettings(next);
+}
+
+// 客户端可配置一个自定义前缀（如 [SakuraGateway]），加在所有返回给客户端的
+// 错误消息前面，便于客户端区分“这是网关返回的”还是“上游原样透传的”。
+function errorPrefix() {
+  return normalizeSettings(config.settings).errorPrefix || '';
+}
+
+function applyErrorPrefix(message) {
+  const prefix = errorPrefix();
+  const text = String(message ?? '');
+  return prefix ? `${prefix} ${text}` : text;
 }
 
 function findLocalKey(token) {
@@ -1053,9 +1068,13 @@ async function readResponseJson(response) {
 function errorForProtocol(localProtocol, body, status) {
   if (localProtocol === 'anthropic') {
     const message = body?.error?.message || body?.message || `上游返回 HTTP ${status}`;
-    return { type: 'error', error: { type: 'api_error', message } };
+    return { type: 'error', error: { type: 'api_error', message: applyErrorPrefix(message) } };
   }
-  return body?.error ? body : { error: { message: body?.message || `上游返回 HTTP ${status}`, type: 'upstream_error' } };
+  if (body?.error) {
+    // 拷贝一份再加前缀：原始 body 还会被日志/聚合统计引用，不能就地改写。
+    return { ...body, error: { ...body.error, message: applyErrorPrefix(body.error.message ?? `上游返回 HTTP ${status}`) } };
+  }
+  return { error: { message: applyErrorPrefix(body?.message || `上游返回 HTTP ${status}`), type: 'upstream_error' } };
 }
 
 function shouldRetryUpstream(status) {
@@ -1728,7 +1747,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
       log('stream error', { requestId, message: error.message });
     finishMetrics({ success: false, status: 502, upstream: upstream.name, upstreamModel, error: error.message });
     if (!res.writableEnded) {
-      writeSse(res, { error: { message: error.message, type: 'upstream_error' } });
+      writeSse(res, { error: { message: applyErrorPrefix(error.message), type: 'upstream_error' } });
       res.end();
     }
   }

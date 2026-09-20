@@ -474,6 +474,7 @@ function render() {
   $('#circuitBreakerCooldownMs').value = settings.circuitBreakerCooldownMs ?? 60000;
   $('#maxConcurrentRequests').value = settings.maxConcurrentRequests ?? 0;
   $('#requestsPerMinute').value = settings.requestsPerMinute ?? 0;
+  $('#errorPrefix').value = settings.errorPrefix ?? '';
 
   renderMetrics();
   renderModelCatalog();
@@ -1049,7 +1050,8 @@ async function saveSettings() {
     circuitBreakerFailureThreshold: Number($('#circuitBreakerFailureThreshold').value),
     circuitBreakerCooldownMs: Number($('#circuitBreakerCooldownMs').value),
     maxConcurrentRequests: Number($('#maxConcurrentRequests').value),
-    requestsPerMinute: Number($('#requestsPerMinute').value)
+    requestsPerMinute: Number($('#requestsPerMinute').value),
+    errorPrefix: $('#errorPrefix').value.trim()
   };
   try {
     const settings = await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(payload) });
