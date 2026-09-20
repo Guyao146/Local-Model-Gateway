@@ -333,6 +333,23 @@ async function main() {
     customFrames = null;
     assert.match(orphan.body, /无法转换为 Chat/);
     assert.doesNotMatch(orphan.body, /"tool_calls"/);
+    // 工具调用转换失败属于网关自身错误，必须同样带上可自定义前缀。
+    await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
+      method: 'PUT', headers: adminHeaders, body: JSON.stringify({ errorPrefix: '[TestGateway]' })
+    });
+    customFrames = [
+      { type: 'response.function_call_arguments.delta', item_id: 'orphan', delta: '{}' },
+      { type: 'response.completed', response: { output: [] } }
+    ];
+    const prefixed = await request(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST', headers: localHeaders,
+      body: JSON.stringify({ model: 'chat-native', stream: true, messages: [{ role: 'user', content: 'tools' }] })
+    });
+    customFrames = null;
+    assert.match(prefixed.body, /\[TestGateway\] .*无法转换为 Chat/);
+    await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
+      method: 'PUT', headers: adminHeaders, body: JSON.stringify({ errorPrefix: '' })
+    });
     // 自动模式下 Chat + tools 不应因思考开关改变端点。
     for (const thinkingLevel of ['medium', 'off']) {
       const before = received.length;
