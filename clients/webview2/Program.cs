@@ -100,11 +100,6 @@ internal sealed class GatewayForm : Form
             string webData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalModelGateway", "webview2");
             var environment = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(null, webData);
             await webView.EnsureCoreWebView2Async(environment);
-            // 显式启用右键菜单与开发者工具：默认配置下部分环境会禁用它们，
-            // 导致用户在网关页面里无法复制内容、也无法按 F12 排查问题。
-            webView.CoreWebView2.Settings.AreDefaultContextMenuEnabled = true;
-            webView.CoreWebView2.Settings.AreDevToolsEnabled = true;
-            webView.CoreWebView2.Settings.IsStatusBarEnabled = true;
             status.Visible = false;
             webView.CoreWebView2.Navigate($"http://127.0.0.1:{port}/");
         }
