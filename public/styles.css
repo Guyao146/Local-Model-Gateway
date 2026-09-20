@@ -49,6 +49,8 @@ h2 { display: inline; margin-left: 14px; font-size: 21px; letter-spacing: -.025e
 .admin-message { text-align: right; }
 .admin-message:empty { display: none; }
 .dashboard-card.panel { padding-right: 0; padding-left: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.dashboard-card.panel { margin-top: 0; }
+.dashboard-card.panel:not(.hidden) ~ .dashboard-card.panel:not(.hidden) { margin-top: 6px; }
 .panel-heading, .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .panel-heading > div, .dialog-heading > div { display: flex; align-items: baseline; }
 .panel-heading h2 { margin-left: 0; }
