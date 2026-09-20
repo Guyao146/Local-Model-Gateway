@@ -1,8 +1,13 @@
+const { createHash } = require('node:crypto');
 const { responseId } = require('./protocol');
 
 // 客户端（Codex 等严格反序列化的 SDK）要求 id/call_id 等字段必须是字符串。
 // 上游有时返回数字、null 或对象，网关在输出前统一归一化，并把“修过哪里”记进日志。
 const ID_KEYS = new Set(['id', 'call_id', 'item_id', 'response_id', 'previous_response_id']);
+// previous_response_id 在协议里是可空字符串（string | null），null 合法，不能强转；
+// 其余 id 类字段在客户端 SDK 里都是必填字符串——null 同样会触发
+// “Expected 'id' to be a string.”，必须兜底成字符串。
+const NULLABLE_ID_KEYS = new Set(['previous_response_id']);
 const MAX_FRAMES = 12;
 const MAX_FRAME_CHARS = 1000;
 const MAX_SAMPLE_CHARS = 3000;
@@ -40,6 +45,21 @@ function warn(diag, message) {
   if (text && !diag.warnings.includes(text)) diag.warnings.push(text);
 }
 
+// 判定某个 id 类字段是否“存在但不是字符串”：数字、布尔、对象、数组、null 都算
+// （null 对必填 id 字段同样非法，正是客户端报 Expected 'id' to be a string. 的场景）。
+// previous_response_id 可空，其 null/undefined 视为合法。
+function isBadIdValue(key, value) {
+  if (!ID_KEYS.has(key)) return false;
+  if (NULLABLE_ID_KEYS.has(key)) return value !== null && value !== undefined && typeof value !== 'string';
+  return typeof value !== 'string';
+}
+
+// 为 null/对象类 id 生成稳定的兜底字符串：同一结构的帧（如 response.created 与
+// response.completed 的 response.id）落在相同路径，会得到相同值，客户端能正常关联。
+function fallbackId(key, path) {
+  return `${key}_${createHash('sha256').update(`${path}.${key}`).digest('hex').slice(0, 16)}`;
+}
+
 // 递归找出所有“存在但不是字符串”的 id 类字段。
 function scanIds(value, path, bad) {
   if (Array.isArray(value)) {
@@ -49,29 +69,24 @@ function scanIds(value, path, bad) {
   if (value && typeof value === 'object') {
     for (const [key, item] of Object.entries(value)) {
       const childPath = `${path}.${key}`;
-      if (ID_KEYS.has(key) && item !== null && item !== undefined && typeof item !== 'string') {
-        bad.push({ path: childPath, value: item });
-      }
+      if (isBadIdValue(key, item)) bad.push({ path: childPath, value: item });
       scanIds(item, childPath, bad);
     }
   }
 }
 
-// 就地把非字符串 id 改成字符串（数字直接转，对象序列化）。
-function normalizeIdsInPlace(value) {
+// 就地把非字符串 id 改成字符串（数字直接转，null/对象用稳定兜底值）。
+function normalizeIdsInPlace(value, path = 'root') {
   if (Array.isArray(value)) {
-    for (const item of value) normalizeIdsInPlace(item);
+    for (let index = 0; index < value.length; index += 1) normalizeIdsInPlace(value[index], `${path}[${index}]`);
     return;
   }
   if (value && typeof value === 'object') {
     for (const key of Object.keys(value)) {
-      if (ID_KEYS.has(key)) {
-        const item = value[key];
-        if (item !== null && item !== undefined && typeof item !== 'string') {
-          value[key] = responseId(item, JSON.stringify(item));
-        }
+      if (isBadIdValue(key, value[key])) {
+        value[key] = responseId(value[key], fallbackId(key, path));
       }
-      normalizeIdsInPlace(value[key]);
+      normalizeIdsInPlace(value[key], `${path}.${key}`);
     }
   }
 }

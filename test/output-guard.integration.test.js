@@ -67,7 +67,8 @@ async function main() {
     res.setHeader('Content-Type', 'text/event-stream');
     // 故意用数字 id（部分聚合站的真实行为）。
     writeSse(res, { id: 99901, object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
-    writeSse(res, { id: 99902, object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { content: 'guarded' }, finish_reason: null }] });
+    // 再混一个 null id：客户端 SDK 对必填 id 报 Expected 'id' to be a string. 的另一种形态。
+    writeSse(res, { id: null, object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { content: 'guarded' }, finish_reason: null }] });
     writeSse(res, { id: 99903, object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
     writeSse(res, '[DONE]');
     res.end();
@@ -107,6 +108,7 @@ async function main() {
       assert.equal(typeof chunk.id, 'string', `透传 chunk.id 必须是字符串，实际为 ${JSON.stringify(chunk.id)}`);
     }
     assert.ok(!response.body.includes('"id": 99901'), '原始数字 id 不应出现在客户端输出中');
+    assert.ok(!response.body.includes('"id": null'), 'null id 不应出现在客户端输出中');
     // 告警应写入诊断日志，便于事后定位是哪一帧、哪个字段被修正了。
     const logs = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/logs?limit=20`, { headers: adminHeaders });
     assert.equal(logs.status, 200);

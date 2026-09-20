@@ -22,24 +22,41 @@ function fakeResponse() {
 }
 
 function main() {
-  // scanIds 能定位数字、布尔、对象类型的 id 字段；null/undefined 视为可空、不报告。
+  // scanIds 能定位数字、布尔、对象、null 类型的必填 id 字段；
+  // previous_response_id 可空，其 null 不应被报告。
   const bad = [];
   scanIds({ id: 12345, choices: [{ delta: { tool_calls: [{ id: null, call_id: 7 }] } }], ok: 'fine' }, '$', bad);
-  assert.equal(bad.length, 2, `应发现 2 处非字符串 id（数字 id 与数字 call_id），实际 ${bad.length}`);
+  assert.equal(bad.length, 3, `应发现 3 处非字符串 id（数字 id、null tool_call.id 与数字 call_id），实际 ${bad.length}`);
   assert.ok(bad.some((item) => item.path === '$.id' && item.value === 12345));
+  assert.ok(bad.some((item) => item.path === '$.choices[0].delta.tool_calls[0].id' && item.value === null), 'null 的必填 id 必须被报告');
   assert.ok(bad.some((item) => item.path === '$.choices[0].delta.tool_calls[0].call_id' && item.value === 7));
+  // previous_response_id 的 null 在协议里合法，不算问题。
+  const nullable = [];
+  scanIds({ previous_response_id: null, response_id: null }, '$', nullable);
+  assert.equal(nullable.length, 1, '只有 response_id 的 null 非法');
+  assert.ok(nullable.some((item) => item.path === '$.response_id' && item.value === null));
   // 字符串 id 与不存在的 id 字段都不算问题。
   const clean = [];
   scanIds({ id: 'chatcmpl_ok', choices: [{ delta: { tool_calls: [{ index: 0 }] } }] }, '$', clean);
   assert.equal(clean.length, 0);
 
-  // normalizeIdsInPlace 把数字转成字符串，对象序列化，字符串保持不变。
+  // normalizeIdsInPlace 把数字转成字符串，null/对象用稳定兜底值，字符串保持不变。
   const target = { id: 12345, output: [{ call_id: { weird: true }, item_id: 'keep' }] };
   normalizeIdsInPlace(target);
   assert.equal(typeof target.id, 'string');
   assert.equal(target.id, '12345');
   assert.equal(typeof target.output[0].call_id, 'string');
   assert.equal(target.output[0].item_id, 'keep');
+  // null 的必填 id 必须被改写成字符串——这正是客户端报
+  // Expected 'id' to be a string. 的场景。
+  const nulled = { response: { id: null, previous_response_id: null } };
+  normalizeIdsInPlace(nulled);
+  assert.equal(typeof nulled.response.id, 'string', 'null response.id 必须被改写为字符串');
+  assert.equal(nulled.response.previous_response_id, null, 'previous_response_id 的 null 应保持不变');
+  // 相同结构的帧得到相同兜底值，客户端能跨帧关联。
+  const sameShape = { response: { id: null } };
+  normalizeIdsInPlace(sameShape);
+  assert.equal(nulled.response.id, sameShape.response.id, '相同路径的兜底 id 必须稳定一致');
 
   // attachOutputCapture：坏帧被改写并告警，好帧逐字透传。
   const res = fakeResponse();
@@ -67,6 +84,18 @@ function main() {
   assert.ok(diag.warnings.length >= 1, '应记录至少一条警告');
   assert.ok(diag.warnings.some((message) => message.includes('$.id') && message.includes('67890')), `警告应指出字段路径，实际：${JSON.stringify(diag.warnings)}`);
   assert.ok(diag.output.length >= 1, '应采样输出帧');
+
+  // attachOutputCapture 对 null id 的处理：必填 id 字段为 null 时必须改写为字符串，
+  // 否则客户端 SDK 会报 Expected 'id' to be a string.（v2.0.9 修复的回归点）。
+  const nullRes = fakeResponse();
+  const nullDiag = createDiagnostics();
+  attachOutputCapture(nullRes, nullDiag);
+  nullRes.write('data: {"id": null, "object": "chat.completion.chunk", "choices": []}\n\n');
+  const nullOutput = nullRes.__written.join('');
+  assert.ok(!nullOutput.includes('"id": null'), 'null id 不应出现在输出中');
+  const nullData = nullOutput.split('\n').find((line) => line.startsWith('data:')).slice(5).trim();
+  assert.equal(typeof JSON.parse(nullData).id, 'string', 'null id 必须被改写为字符串');
+  assert.ok(nullDiag.warnings.some((message) => message.includes('$.id')), '应记录 null id 的告警');
 
   // sample 只保留开头若干帧并做总量截断。
   const list = [];
