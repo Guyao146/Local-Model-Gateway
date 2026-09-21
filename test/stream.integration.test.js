@@ -265,6 +265,9 @@ async function main() {
         assert.ok(entry, `应根据错误消息中的 ${requestId} 查到日志`);
         assert.equal(entry.success, false, '上游 SSE 错误不能记作成功');
         assert.equal(entry.error, rawMessage, '原始错误保留在日志中');
+        assert.deepEqual(entry.upstreamError, upstreamProtocol === 'openai'
+          ? { status: 200, code: 'stream_quota', type: 'rate_limit_error', param: 'model', message: rawMessage }
+          : { status: 200, type: 'overloaded_error', message: rawMessage }, '流式上游错误也要结构化记录');
       }
     }
     console.log('stream integration tests passed');

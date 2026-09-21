@@ -11,45 +11,45 @@
     <header class="topbar">
       <div>
         <div class="eyebrow">LOCAL MODEL GATEWAY</div>
-        <h1>本地模型网关</h1>
-        <p class="subtitle">统一管理上游站点，把 OpenAI / Claude 请求路由到你的模型服务。</p>
+        <h1>鏈湴妯″瀷缃戝叧</h1>
+        <p class="subtitle">缁熶竴绠＄悊涓婃父绔欑偣锛屾妸 OpenAI / Claude 璇锋眰璺敱鍒颁綘鐨勬ā鍨嬫湇鍔°€?/p>
       </div>
       <div class="topbar-side">
         <div class="admin-toolbar">
-          <strong id="adminIdentity">正在检查认证状态</strong>
-          <button id="loadButton" class="button secondary">重新载入</button>
-          <button id="logoutButton" class="button danger-outline">退出登录</button>
+          <strong id="adminIdentity">姝ｅ湪妫€鏌ヨ璇佺姸鎬?/strong>
+          <button id="loadButton" class="button secondary">閲嶆柊杞藉叆</button>
+          <button id="logoutButton" class="button danger-outline">閫€鍑虹櫥褰?/button>
         </div>
-        <div class="status-pill"><span class="status-dot"></span><span id="healthText">检查服务中</span></div>
+        <div class="status-pill"><span class="status-dot"></span><span id="healthText">妫€鏌ユ湇鍔′腑</span></div>
       </div>
     </header>
 
     <section class="notice">
-      <strong>访问保护</strong>
-      <span>本机回环访问自动放行；远程管理访问必须通过 Authentik OIDC 登录。模型调用接口仍使用本地 API Key。</span>
+      <strong>璁块棶淇濇姢</strong>
+      <span>鏈満鍥炵幆璁块棶鑷姩鏀捐锛涜繙绋嬬鐞嗚闂繀椤婚€氳繃 Authentik OIDC 鐧诲綍銆傛ā鍨嬭皟鐢ㄦ帴鍙ｄ粛浣跨敤鏈湴 API Key銆?/span>
     </section>
 
     <div class="admin-layout">
       <aside class="sidebar">
-        <div class="sidebar-title">功能导航</div>
+        <div class="sidebar-title">鍔熻兘瀵艰埅</div>
         <nav class="tabs" role="tablist">
-          <div class="tab-group"><span class="tab-group-title">总览</span><button type="button" class="tab active" role="tab" aria-selected="true" data-tab="overview">概览</button></div>
-          <div class="tab-group"><span class="tab-group-title">路由配置</span>
-            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="upstreams">上游站点</button>
-            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="routes">模型路由</button>
-            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="models">本地模型选择</button>
+          <div class="tab-group"><span class="tab-group-title">鎬昏</span><button type="button" class="tab active" role="tab" aria-selected="true" data-tab="overview">姒傝</button></div>
+          <div class="tab-group"><span class="tab-group-title">璺敱閰嶇疆</span>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="upstreams">涓婃父绔欑偣</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="routes">妯″瀷璺敱</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="models">鏈湴妯″瀷閫夋嫨</button>
           </div>
-          <div class="tab-group"><span class="tab-group-title">访问控制</span><button type="button" class="tab" role="tab" aria-selected="false" data-tab="keys">本地调用 Key</button></div>
-          <div class="tab-group"><span class="tab-group-title">监控统计</span>
-            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="metrics">请求统计</button>
-            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="logs">请求日志</button>
+          <div class="tab-group"><span class="tab-group-title">璁块棶鎺у埗</span><button type="button" class="tab" role="tab" aria-selected="false" data-tab="keys">鏈湴璋冪敤 Key</button></div>
+          <div class="tab-group"><span class="tab-group-title">鐩戞帶缁熻</span>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="metrics">璇锋眰缁熻</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="logs">璇锋眰鏃ュ織</button>
           </div>
-          <div class="tab-group"><span class="tab-group-title">系统</span>
-            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="settings">可靠性设置</button>
-            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="backup">配置备份</button>
+          <div class="tab-group"><span class="tab-group-title">绯荤粺</span>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="settings">鍙潬鎬ц缃?/button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-tab="backup">閰嶇疆澶囦唤</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.1.0</strong></div>
+        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.1.1</strong></div>
       </aside>
 
       <div class="content">
@@ -58,108 +58,108 @@
         <div id="dashboard" class="dashboard hidden">
           <section class="panel dashboard-card" data-panel-id="upstreams" data-tab-page="upstreams">
         <div class="panel-heading">
-          <div><h2>上游站点</h2></div>
-          <div class="panel-actions"><button id="queryAllBalancesButton" class="button secondary">查询全部余额</button><button id="addUpstreamButton" class="button primary">＋ 添加上游</button></div>
+          <div><h2>涓婃父绔欑偣</h2></div>
+          <div class="panel-actions"><button id="queryAllBalancesButton" class="button secondary">鏌ヨ鍏ㄩ儴浣欓</button><button id="addUpstreamButton" class="button primary">锛?娣诲姞涓婃父</button></div>
         </div>
-        <p class="help">OpenAI 兼容协议适用于 sub2api / newapi 常见接口；Anthropic 协议会使用 <code>/v1/messages</code>。可测试连接、查询余额，并查看上游熔断状态。余额查询不会影响熔断状态。</p>
+        <p class="help">OpenAI 鍏煎鍗忚閫傜敤浜?sub2api / newapi 甯歌鎺ュ彛锛汚nthropic 鍗忚浼氫娇鐢?<code>/v1/messages</code>銆傚彲娴嬭瘯杩炴帴銆佹煡璇綑棰濓紝骞舵煡鐪嬩笂娓哥啍鏂姸鎬併€備綑棰濇煡璇笉浼氬奖鍝嶇啍鏂姸鎬併€?/p>
         <div id="upstreamList" class="card-list"></div>
       </section>
 
           <section class="panel dashboard-card" data-panel-id="routes" data-tab-page="routes">
         <div class="panel-heading">
-          <div><h2>模型路由</h2></div>
-          <button id="addRouteButton" class="button primary">＋ 添加路由</button>
+          <div><h2>妯″瀷璺敱</h2></div>
+          <button id="addRouteButton" class="button primary">锛?娣诲姞璺敱</button>
         </div>
-        <p class="help">精确匹配优先；也可以把本地模型名写为 <code>*</code> 作为兜底路由。只有一个上游时可不配路由。</p>
+        <p class="help">绮剧‘鍖归厤浼樺厛锛涗篃鍙互鎶婃湰鍦版ā鍨嬪悕鍐欎负 <code>*</code> 浣滀负鍏滃簳璺敱銆傚彧鏈変竴涓笂娓告椂鍙笉閰嶈矾鐢便€?/p>
         <div id="routeList" class="card-list"></div>
       </section>
 
           <section class="panel model-catalog-panel dashboard-card" data-panel-id="models" data-tab-page="models">
         <div class="panel-heading">
-          <div><h2>本地模型选择</h2></div>
-          <div class="panel-actions"><button id="syncAllModelsButton" class="button secondary">拉取全部模型</button><button id="saveModelSelectionsButton" class="button primary">保存勾选</button></div>
+          <div><h2>鏈湴妯″瀷閫夋嫨</h2></div>
+          <div class="panel-actions"><button id="syncAllModelsButton" class="button secondary">鎷夊彇鍏ㄩ儴妯″瀷</button><button id="saveModelSelectionsButton" class="button primary">淇濆瓨鍕鹃€?/button></div>
         </div>
-        <p class="help">相同模型 ID 会合并成一项，并按 ID 前缀分组。每个模型可选择“自动选择”全部同名来源站，也可在下拉框中固定某一个站；自动模式会轮询健康站点，并在连接失败、429、5xx 或熔断时切换。可以设置本地别名、默认思考强度和接口协议（自动 / Responses / Chat Completions）。</p>
-        <div class="model-toolbar"><input id="modelCatalogSearch" type="search" placeholder="搜索上游、模型或前缀"><label class="check-label"><input id="showThinkingModelsOnly" type="checkbox"> 只看支持思考的模型</label><button id="expandAllModelsButton" class="text-button">全部展开</button><button id="collapseAllModelsButton" class="text-button">全部收起</button></div>
+        <p class="help">鐩稿悓妯″瀷 ID 浼氬悎骞舵垚涓€椤癸紝骞舵寜 ID 鍓嶇紑鍒嗙粍銆傛瘡涓ā鍨嬪彲閫夋嫨鈥滆嚜鍔ㄩ€夋嫨鈥濆叏閮ㄥ悓鍚嶆潵婧愮珯锛屼篃鍙湪涓嬫媺妗嗕腑鍥哄畾鏌愪竴涓珯锛涜嚜鍔ㄦā寮忎細杞鍋ュ悍绔欑偣锛屽苟鍦ㄨ繛鎺ュけ璐ャ€?29銆?xx 鎴栫啍鏂椂鍒囨崲銆傚彲浠ヨ缃湰鍦板埆鍚嶃€侀粯璁ゆ€濊€冨己搴﹀拰鎺ュ彛鍗忚锛堣嚜鍔?/ Responses / Chat Completions锛夈€?/p>
+        <div class="model-toolbar"><input id="modelCatalogSearch" type="search" placeholder="鎼滅储涓婃父銆佹ā鍨嬫垨鍓嶇紑"><label class="check-label"><input id="showThinkingModelsOnly" type="checkbox"> 鍙湅鏀寔鎬濊€冪殑妯″瀷</label><button id="expandAllModelsButton" class="text-button">鍏ㄩ儴灞曞紑</button><button id="collapseAllModelsButton" class="text-button">鍏ㄩ儴鏀惰捣</button></div>
         <div id="modelCatalogList" class="model-catalog-list"></div>
         <div id="modelSelectionMessage" class="form-message"></div>
       </section>
 
           <section class="panel dashboard-card" data-panel-id="keys" data-tab-page="keys">
         <div class="panel-heading">
-          <div><h2>本地调用 Key</h2></div>
-          <button id="addKeyButton" class="button primary">＋ 新建 Key</button>
+          <div><h2>鏈湴璋冪敤 Key</h2></div>
+          <button id="addKeyButton" class="button primary">锛?鏂板缓 Key</button>
         </div>
-        <p class="help">本地 APP 调用时使用这里的 Key。完整 Key 可直接查看和复制；请求头可用 <code>Authorization: Bearer ...</code> 或 <code>x-api-key: ...</code>。</p>
+        <p class="help">鏈湴 APP 璋冪敤鏃朵娇鐢ㄨ繖閲岀殑 Key銆傚畬鏁?Key 鍙洿鎺ユ煡鐪嬪拰澶嶅埗锛涜姹傚ご鍙敤 <code>Authorization: Bearer ...</code> 鎴?<code>x-api-key: ...</code>銆?/p>
         <div id="keyList" class="key-list"></div>
       </section>
 
           <section class="panel settings-panel dashboard-card" data-panel-id="settings" data-tab-page="settings">
         <div class="panel-heading">
-          <div><h2>可靠性设置</h2></div>
-          <button id="saveSettingsButton" class="button primary">保存设置</button>
+          <div><h2>鍙潬鎬ц缃?/h2></div>
+          <button id="saveSettingsButton" class="button primary">淇濆瓨璁剧疆</button>
         </div>
-        <p class="help">控制上游请求等待时间和故障转移行为。最大备用尝试次数为 0 时表示不限制，设置修改立即保存。</p>
+        <p class="help">鎺у埗涓婃父璇锋眰绛夊緟鏃堕棿鍜屾晠闅滆浆绉昏涓恒€傛渶澶у鐢ㄥ皾璇曟鏁颁负 0 鏃惰〃绀轰笉闄愬埗锛岃缃慨鏀圭珛鍗充繚瀛樸€?/p>
         <div class="settings-grid">
-          <label>上游超时（毫秒）<input id="upstreamTimeoutMs" type="number" min="1000" max="3600000" step="1000"></label>
-          <label>最大备用尝试次数<input id="maxFallbackAttempts" type="number" min="0" max="12" step="1"></label>
-          <label>切换前等待（毫秒）<input id="retryDelayMs" type="number" min="0" max="30000" step="100"></label>
-          <label>熔断失败阈值<input id="circuitBreakerFailureThreshold" type="number" min="1" max="20" step="1"></label>
-          <label>熔断冷却（毫秒）<input id="circuitBreakerCooldownMs" type="number" min="1000" max="3600000" step="1000"></label>
-          <label>最大并发请求数<input id="maxConcurrentRequests" type="number" min="0" max="1000" step="1"></label>
-          <label>每 Key 每分钟请求数<input id="requestsPerMinute" type="number" min="0" max="10000" step="1"></label>
-          <label>错误消息前缀<input id="errorPrefix" type="text" maxlength="60" placeholder="例如 [SakuraGateway]（留空则不加）"></label>
+          <label>涓婃父瓒呮椂锛堟绉掞級<input id="upstreamTimeoutMs" type="number" min="1000" max="3600000" step="1000"></label>
+          <label>鏈€澶у鐢ㄥ皾璇曟鏁?input id="maxFallbackAttempts" type="number" min="0" max="12" step="1"></label>
+          <label>鍒囨崲鍓嶇瓑寰咃紙姣锛?input id="retryDelayMs" type="number" min="0" max="30000" step="100"></label>
+          <label>鐔旀柇澶辫触闃堝€?input id="circuitBreakerFailureThreshold" type="number" min="1" max="20" step="1"></label>
+          <label>鐔旀柇鍐峰嵈锛堟绉掞級<input id="circuitBreakerCooldownMs" type="number" min="1000" max="3600000" step="1000"></label>
+          <label>鏈€澶у苟鍙戣姹傛暟<input id="maxConcurrentRequests" type="number" min="0" max="1000" step="1"></label>
+          <label>姣?Key 姣忓垎閽熻姹傛暟<input id="requestsPerMinute" type="number" min="0" max="10000" step="1"></label>
+          <label>閿欒娑堟伅鍓嶇紑<input id="errorPrefix" type="text" maxlength="60" placeholder="渚嬪 [SakuraGateway]锛堢暀绌哄垯涓嶅姞锛?></label>
         </div>
         <div id="settingsMessage" class="form-message"></div>
       </section>
 
           <section class="panel endpoint-panel dashboard-card" data-panel-id="metrics" data-tab-page="metrics">
         <div class="panel-heading">
-          <div><h2>请求统计</h2></div>
-          <div class="panel-actions"><button id="exportRecentUsageButton" class="button secondary">导出近 100 条</button><button id="exportAllUsageButton" class="button secondary">导出全部用量</button><button id="importUsageButton" class="button secondary">导入用量</button><input id="usageFileInput" type="file" accept="application/json,.json" hidden><button id="clearMetricsButton" class="button danger-outline">清空统计</button></div>
+          <div><h2>璇锋眰缁熻</h2></div>
+          <div class="panel-actions"><button id="exportRecentUsageButton" class="button secondary">瀵煎嚭杩?100 鏉?/button><button id="exportAllUsageButton" class="button secondary">瀵煎嚭鍏ㄩ儴鐢ㄩ噺</button><button id="importUsageButton" class="button secondary">瀵煎叆鐢ㄩ噺</button><input id="usageFileInput" type="file" accept="application/json,.json" hidden><button id="clearMetricsButton" class="button danger-outline">娓呯┖缁熻</button></div>
         </div>
         <div class="stats-grid" id="statsGrid"></div>
-        <div class="subheading-row"><h3>按上游统计</h3><span class="muted">每 5 秒自动刷新</span></div>
+        <div class="subheading-row"><h3>鎸変笂娓哥粺璁?/h3><span class="muted">姣?5 绉掕嚜鍔ㄥ埛鏂?/span></div>
         <div id="upstreamStats" class="upstream-stats"></div>
       </section>
 
           <section class="panel endpoint-panel dashboard-card" data-panel-id="logs" data-tab-page="logs">
         <div class="panel-heading">
-          <div><h2>请求日志</h2></div>
-          <button id="refreshLogsButton" type="button" class="button secondary">刷新日志</button>
+          <div><h2>璇锋眰鏃ュ織</h2></div>
+          <button id="refreshLogsButton" type="button" class="button secondary">鍒锋柊鏃ュ織</button>
         </div>
-        <p class="help">仅记录请求元数据，不保存请求正文、请求头、API Key 或上游完整地址。失败时可根据请求 ID、上游尝试和错误信息定位问题。</p>
-        <div class="subheading-row"><h3>最近请求</h3><span id="requestLogSummary" class="muted">仅记录元数据</span></div>
-        <div class="table-wrap request-log-table"><table><thead><tr><th>请求 ID</th><th>时间</th><th>协议</th><th>模型 / 上游模型</th><th>策略 / 尝试</th><th>上游</th><th>状态</th><th>耗时</th><th>Token</th><th>结果 / 错误</th></tr></thead><tbody id="requestLogBody"></tbody></table></div>
-        <div id="metricsEmpty" class="empty hidden">还没有请求记录。</div>
-        <div id="requestLogMore" class="log-more hidden"><button id="loadMoreLogsButton" type="button" class="button secondary">加载更多</button></div>
+          <p class="help">浠呰褰曡姹傚厓鏁版嵁锛屼笉淇濆瓨璇锋眰姝ｆ枃銆佽姹傚ご銆丄PI Key 鎴栦笂娓稿畬鏁村湴鍧€銆傚け璐ユ椂鍙牴鎹姹?ID銆佹瘡娆′笂娓稿皾璇曠殑鐘舵€佺爜涓庝笂娓歌繑鍥炵殑閿欒鐮佸畾浣嶉棶棰樸€?/p>
+        <div class="subheading-row"><h3>鏈€杩戣姹?/h3><span id="requestLogSummary" class="muted">浠呰褰曞厓鏁版嵁</span></div>
+        <div class="table-wrap request-log-table"><table><thead><tr><th>璇锋眰 ID</th><th>鏃堕棿</th><th>鍗忚</th><th>妯″瀷 / 涓婃父妯″瀷</th><th>绛栫暐 / 灏濊瘯</th><th>涓婃父</th><th>鐘舵€?/th><th>鑰楁椂</th><th>Token</th><th>缁撴灉 / 閿欒</th></tr></thead><tbody id="requestLogBody"></tbody></table></div>
+        <div id="metricsEmpty" class="empty hidden">杩樻病鏈夎姹傝褰曘€?/div>
+        <div id="requestLogMore" class="log-more hidden"><button id="loadMoreLogsButton" type="button" class="button secondary">鍔犺浇鏇村</button></div>
       </section>
 
           <section class="panel endpoint-panel dashboard-card" data-panel-id="backup" data-tab-page="backup">
         <div class="panel-heading">
-          <div><h2>配置备份</h2></div>
-          <div class="panel-actions"><button id="exportConfigButton" class="button secondary">导出配置</button><button id="importConfigButton" class="button primary">导入配置</button><input id="configFileInput" type="file" accept="application/json,.json" hidden></div>
+          <div><h2>閰嶇疆澶囦唤</h2></div>
+          <div class="panel-actions"><button id="exportConfigButton" class="button secondary">瀵煎嚭閰嶇疆</button><button id="importConfigButton" class="button primary">瀵煎叆閰嶇疆</button><input id="configFileInput" type="file" accept="application/json,.json" hidden></div>
         </div>
-        <p class="help">导出文件包含本地 Key、上游 API Key 和旧版兼容字段，请只保存到安全位置。导入默认保留本机当前凭据。</p>
+        <p class="help">瀵煎嚭鏂囦欢鍖呭惈鏈湴 Key銆佷笂娓?API Key 鍜屾棫鐗堝吋瀹瑰瓧娈碉紝璇峰彧淇濆瓨鍒板畨鍏ㄤ綅缃€傚鍏ラ粯璁や繚鐣欐湰鏈哄綋鍓嶅嚟鎹€?/p>
       </section>
 
           <section class="panel endpoint-panel dashboard-card" data-panel-id="endpoints" data-tab-page="overview">
         <div class="panel-heading">
-          <div><h2>本地接口</h2></div>
+          <div><h2>鏈湴鎺ュ彛</h2></div>
         </div>
         <div class="endpoint-grid">
           <div><span>OpenAI Base URL</span><code id="openaiEndpoint"></code></div>
           <div><span>Anthropic Base URL</span><code id="anthropicEndpoint"></code></div>
-          <div><span>模型列表</span><code id="modelsEndpoint"></code></div>
+          <div><span>妯″瀷鍒楄〃</span><code id="modelsEndpoint"></code></div>
         </div>
       </section>
 
           <section class="panel endpoint-panel dashboard-card" data-panel-id="updates" data-tab-page="overview">
         <div class="panel-heading">
-          <div><h2>版本与升级</h2></div>
-          <button id="checkUpdateButton" type="button" class="button secondary">检查更新</button>
+          <div><h2>鐗堟湰涓庡崌绾?/h2></div>
+          <button id="checkUpdateButton" type="button" class="button secondary">妫€鏌ユ洿鏂?/button>
         </div>
-        <div id="updateStatus" class="update-status"><span>当前版本：<code id="currentVersion">读取中…</code></span><span id="updateMessage" class="muted">尚未检查</span></div>
+        <div id="updateStatus" class="update-status"><span>褰撳墠鐗堟湰锛?code id="currentVersion">璇诲彇涓€?/code></span><span id="updateMessage" class="muted">灏氭湭妫€鏌?/span></div>
         <div id="updateDetails" class="update-details hidden"></div>
       </section>
         </div>
@@ -169,65 +169,65 @@
 
   <dialog id="upstreamDialog">
     <form method="dialog" id="upstreamForm" class="dialog-form">
-      <div class="dialog-heading"><div><span class="section-number">UPSTREAM</span><h2 id="upstreamDialogTitle">添加上游</h2></div><button type="button" data-dialog-close="upstreamDialog" class="icon-button" aria-label="关闭">×</button></div>
+      <div class="dialog-heading"><div><span class="section-number">UPSTREAM</span><h2 id="upstreamDialogTitle">娣诲姞涓婃父</h2></div><button type="button" data-dialog-close="upstreamDialog" class="icon-button" aria-label="鍏抽棴">脳</button></div>
       <input id="upstreamId" type="hidden">
-      <label>名称<input id="upstreamName" required placeholder="例如：我的 newapi"></label>
-      <label>地址<input id="upstreamBaseUrl" required placeholder="例如：https://api.example.com/v1"></label>
+      <label>鍚嶇О<input id="upstreamName" required placeholder="渚嬪锛氭垜鐨?newapi"></label>
+      <label>鍦板潃<input id="upstreamBaseUrl" required placeholder="渚嬪锛歨ttps://api.example.com/v1"></label>
       <div class="two-columns">
-        <label>协议<select id="upstreamProtocol"><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select></label>
-        <label>鉴权方式<select id="upstreamAuthType"><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option><option value="none">不添加鉴权</option></select></label>
+        <label>鍗忚<select id="upstreamProtocol"><option value="openai">OpenAI 鍏煎</option><option value="anthropic">Anthropic</option></select></label>
+        <label>閴存潈鏂瑰紡<select id="upstreamAuthType"><option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option><option value="none">涓嶆坊鍔犻壌鏉?/option></select></label>
       </div>
-      <label>API Key<input id="upstreamApiKey" type="password" autocomplete="off" placeholder="新增时必填；编辑时留空表示保留原 Key"></label>
+      <label>API Key<input id="upstreamApiKey" type="password" autocomplete="off" placeholder="鏂板鏃跺繀濉紱缂栬緫鏃剁暀绌鸿〃绀轰繚鐣欏師 Key"></label>
       <div class="two-columns">
-        <label>客户端兼容标识<select id="upstreamClientIdentityPreset"><option value="default">默认（Node.js fetch）</option><option value="claude_code">Claude Code</option><option value="codex_cli">OpenAI Codex CLI</option><option value="cherry_studio">Cherry Studio</option><option value="custom">自定义 User-Agent</option></select></label>
-        <label id="customUserAgentLabel" class="hidden">自定义 User-Agent<input id="upstreamCustomUserAgent" maxlength="300" placeholder="例如：MyClient/1.0"></label>
+        <label>瀹㈡埛绔吋瀹规爣璇?select id="upstreamClientIdentityPreset"><option value="default">榛樿锛圢ode.js fetch锛?/option><option value="claude_code">Claude Code</option><option value="codex_cli">OpenAI Codex CLI</option><option value="cherry_studio">Cherry Studio</option><option value="custom">鑷畾涔?User-Agent</option></select></label>
+        <label id="customUserAgentLabel" class="hidden">鑷畾涔?User-Agent<input id="upstreamCustomUserAgent" maxlength="300" placeholder="渚嬪锛歁yClient/1.0"></label>
       </div>
-      <div class="help">仅设置客户端兼容标识，不修改鉴权。Codex 预设还会发送 <code>originator: codex_cli_rs</code>；不会伪造动态版本、会话、设备证明或账号签名。</div>
-      <label>Responses API 模式<select id="upstreamResponsesMode"><option value="auto">自动（优先原生，普通请求可回退 Chat）</option><option value="native">仅原生 Responses（保留 Agent/Computer Use）</option><option value="chat">仅 Chat Completions 兼容模式</option></select></label>
-      <div class="help">Codex、Computer Use、Shell、Apply Patch 等 Agent 工具必须使用“原生 Responses”。“自动”仅在普通请求遇到 404/405/501 时回退，Agent 请求不会有损转换。</div>
-      <label>余额接口路径 <span class="muted">（可选）</span><input id="upstreamBalanceEndpoint" placeholder="留空自动探测；例如：/api/usage/token"></label>
-      <div class="help">仅允许当前上游同源的相对路径。NewAPI 通常可留空自动使用 <code>/api/usage/token</code>；部分站点的账户余额接口需要面板凭据，模型 API Key 可能无权查询。</div>
-      <label>上游模型列表 <span class="muted">（可选，每行一个）</span><textarea id="upstreamModels" rows="4" placeholder="填写地址和 API Key 后点击下方“拉取模型”"></textarea></label>
-      <div class="model-fetch-row"><span id="upstreamModelFetchMessage" class="muted">从上游的 /v1/models 自动获取</span><button id="fetchUpstreamModelsButton" type="button" class="button secondary">拉取模型</button></div>
-      <label class="check-label"><input id="upstreamEnabled" type="checkbox" checked> 启用这个上游</label>
-      <div class="dialog-actions"><button type="button" data-dialog-close="upstreamDialog" class="button secondary">取消</button><button id="saveUpstreamButton" value="default" class="button primary">保存上游</button></div>
+      <div class="help">浠呰缃鎴风鍏煎鏍囪瘑锛屼笉淇敼閴存潈銆侰odex 棰勮杩樹細鍙戦€?<code>originator: codex_cli_rs</code>锛涗笉浼氫吉閫犲姩鎬佺増鏈€佷細璇濄€佽澶囪瘉鏄庢垨璐﹀彿绛惧悕銆?/div>
+      <label>Responses API 妯″紡<select id="upstreamResponsesMode"><option value="auto">鑷姩锛堜紭鍏堝師鐢燂紝鏅€氳姹傚彲鍥為€€ Chat锛?/option><option value="native">浠呭師鐢?Responses锛堜繚鐣?Agent/Computer Use锛?/option><option value="chat">浠?Chat Completions 鍏煎妯″紡</option></select></label>
+      <div class="help">Codex銆丆omputer Use銆丼hell銆丄pply Patch 绛?Agent 宸ュ叿蹇呴』浣跨敤鈥滃師鐢?Responses鈥濄€傗€滆嚜鍔ㄢ€濅粎鍦ㄦ櫘閫氳姹傞亣鍒?404/405/501 鏃跺洖閫€锛孉gent 璇锋眰涓嶄細鏈夋崯杞崲銆?/div>
+      <label>浣欓鎺ュ彛璺緞 <span class="muted">锛堝彲閫夛級</span><input id="upstreamBalanceEndpoint" placeholder="鐣欑┖鑷姩鎺㈡祴锛涗緥濡傦細/api/usage/token"></label>
+      <div class="help">浠呭厑璁稿綋鍓嶄笂娓稿悓婧愮殑鐩稿璺緞銆侼ewAPI 閫氬父鍙暀绌鸿嚜鍔ㄤ娇鐢?<code>/api/usage/token</code>锛涢儴鍒嗙珯鐐圭殑璐︽埛浣欓鎺ュ彛闇€瑕侀潰鏉垮嚟鎹紝妯″瀷 API Key 鍙兘鏃犳潈鏌ヨ銆?/div>
+      <label>涓婃父妯″瀷鍒楄〃 <span class="muted">锛堝彲閫夛紝姣忚涓€涓級</span><textarea id="upstreamModels" rows="4" placeholder="濉啓鍦板潃鍜?API Key 鍚庣偣鍑讳笅鏂光€滄媺鍙栨ā鍨嬧€?></textarea></label>
+      <div class="model-fetch-row"><span id="upstreamModelFetchMessage" class="muted">浠庝笂娓哥殑 /v1/models 鑷姩鑾峰彇</span><button id="fetchUpstreamModelsButton" type="button" class="button secondary">鎷夊彇妯″瀷</button></div>
+      <label class="check-label"><input id="upstreamEnabled" type="checkbox" checked> 鍚敤杩欎釜涓婃父</label>
+      <div class="dialog-actions"><button type="button" data-dialog-close="upstreamDialog" class="button secondary">鍙栨秷</button><button id="saveUpstreamButton" value="default" class="button primary">淇濆瓨涓婃父</button></div>
     </form>
   </dialog>
 
   <dialog id="routeDialog">
     <form method="dialog" id="routeForm" class="dialog-form">
-      <div class="dialog-heading"><div><span class="section-number">ROUTE</span><h2 id="routeDialogTitle">添加路由</h2></div><button type="button" data-dialog-close="routeDialog" class="icon-button" aria-label="关闭">×</button></div>
+      <div class="dialog-heading"><div><span class="section-number">ROUTE</span><h2 id="routeDialogTitle">娣诲姞璺敱</h2></div><button type="button" data-dialog-close="routeDialog" class="icon-button" aria-label="鍏抽棴">脳</button></div>
       <input id="routeId" type="hidden">
-      <label>本地模型名<input id="localModel" required placeholder="例如：claude-3-5-sonnet 或 *"></label>
-      <label>选择上游<select id="routeUpstreamId" required></select></label>
-      <label>上游模型名<input id="routeUpstreamModel" required placeholder="例如：claude-3-5-sonnet-20241022"></label>
-      <label>默认思考强度<select id="routeThinkingLevel"><option value="client">遵循客户端设置</option><option value="auto">自动（跟随上游默认）</option><option value="off">关闭</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
-      <label>接口协议 <span class="muted">（覆盖上游设置，决定该模型走 /v1/responses 还是 /v1/chat/completions）</span><select id="routeResponsesMode"><option value="auto">自动（按上游支持情况选择）</option><option value="native">Responses（/v1/responses）</option><option value="chat">Chat Completions（/v1/chat/completions）</option></select></label>
-      <label>分流策略<select id="routeStrategy"><option value="failover">故障转移（按顺序）</option><option value="round_robin">轮询</option><option value="weighted">加权轮询</option><option value="random">随机</option></select></label>
-      <label>备用上游 <span class="muted">（按顺序尝试；429、5xx 或连接失败时切换）</span><select id="routeFallbackIds" multiple size="4"></select></label>
-      <div><label>上游权重 <span class="muted">（加权轮询使用；默认 1）</span></label><div id="routeWeights" class="route-weights"></div></div>
-      <label class="check-label"><input id="routeEnabled" type="checkbox" checked> 启用这个路由</label>
-      <div class="dialog-actions"><button type="button" data-dialog-close="routeDialog" class="button secondary">取消</button><button value="default" class="button primary">保存路由</button></div>
+      <label>鏈湴妯″瀷鍚?input id="localModel" required placeholder="渚嬪锛歝laude-3-5-sonnet 鎴?*"></label>
+      <label>閫夋嫨涓婃父<select id="routeUpstreamId" required></select></label>
+      <label>涓婃父妯″瀷鍚?input id="routeUpstreamModel" required placeholder="渚嬪锛歝laude-3-5-sonnet-20241022"></label>
+      <label>榛樿鎬濊€冨己搴?select id="routeThinkingLevel"><option value="client">閬靛惊瀹㈡埛绔缃?/option><option value="auto">鑷姩锛堣窡闅忎笂娓搁粯璁わ級</option><option value="off">鍏抽棴</option><option value="low">浣?/option><option value="medium">涓?/option><option value="high">楂?/option></select></label>
+      <label>鎺ュ彛鍗忚 <span class="muted">锛堣鐩栦笂娓歌缃紝鍐冲畾璇ユā鍨嬭蛋 /v1/responses 杩樻槸 /v1/chat/completions锛?/span><select id="routeResponsesMode"><option value="auto">鑷姩锛堟寜涓婃父鏀寔鎯呭喌閫夋嫨锛?/option><option value="native">Responses锛?v1/responses锛?/option><option value="chat">Chat Completions锛?v1/chat/completions锛?/option></select></label>
+      <label>鍒嗘祦绛栫暐<select id="routeStrategy"><option value="failover">鏁呴殰杞Щ锛堟寜椤哄簭锛?/option><option value="round_robin">杞</option><option value="weighted">鍔犳潈杞</option><option value="random">闅忔満</option></select></label>
+      <label>澶囩敤涓婃父 <span class="muted">锛堟寜椤哄簭灏濊瘯锛?29銆?xx 鎴栬繛鎺ュけ璐ユ椂鍒囨崲锛?/span><select id="routeFallbackIds" multiple size="4"></select></label>
+      <div><label>涓婃父鏉冮噸 <span class="muted">锛堝姞鏉冭疆璇娇鐢紱榛樿 1锛?/span></label><div id="routeWeights" class="route-weights"></div></div>
+      <label class="check-label"><input id="routeEnabled" type="checkbox" checked> 鍚敤杩欎釜璺敱</label>
+      <div class="dialog-actions"><button type="button" data-dialog-close="routeDialog" class="button secondary">鍙栨秷</button><button value="default" class="button primary">淇濆瓨璺敱</button></div>
     </form>
   </dialog>
 
   <dialog id="keyDialog">
     <form method="dialog" id="keyForm" class="dialog-form">
-      <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>新建本地 Key</h2></div><button type="button" data-dialog-close="keyDialog" class="icon-button" aria-label="关闭">×</button></div>
-      <label>名称<input id="keyName" required placeholder="例如：桌面 APP"></label>
-      <p class="help">留空自动生成。创建后可随时在本地调用 Key 列表中查看和复制。</p>
-      <div class="dialog-actions"><button type="button" data-dialog-close="keyDialog" class="button secondary">取消</button><button value="default" class="button primary">创建 Key</button></div>
+      <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>鏂板缓鏈湴 Key</h2></div><button type="button" data-dialog-close="keyDialog" class="icon-button" aria-label="鍏抽棴">脳</button></div>
+      <label>鍚嶇О<input id="keyName" required placeholder="渚嬪锛氭闈?APP"></label>
+      <p class="help">鐣欑┖鑷姩鐢熸垚銆傚垱寤哄悗鍙殢鏃跺湪鏈湴璋冪敤 Key 鍒楄〃涓煡鐪嬪拰澶嶅埗銆?/p>
+      <div class="dialog-actions"><button type="button" data-dialog-close="keyDialog" class="button secondary">鍙栨秷</button><button value="default" class="button primary">鍒涘缓 Key</button></div>
     </form>
   </dialog>
 
   <dialog id="keyEditDialog">
     <form method="dialog" id="keyEditForm" class="dialog-form">
-      <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>编辑本地 Key</h2></div><button type="button" data-dialog-close="keyEditDialog" class="icon-button" aria-label="关闭">×</button></div>
+      <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>缂栬緫鏈湴 Key</h2></div><button type="button" data-dialog-close="keyEditDialog" class="icon-button" aria-label="鍏抽棴">脳</button></div>
       <input id="editKeyId" type="hidden">
-      <label>名称<input id="editKeyName" required></label>
-      <label class="check-label"><input id="editKeyEnabled" type="checkbox"> 允许使用这个 Key</label>
-      <p class="help">完整 Key 显示在本地调用 Key 列表中。如需更换密钥，请新建一个 Key 后删除旧 Key。</p>
-      <div class="dialog-actions"><button type="button" data-dialog-close="keyEditDialog" class="button secondary">取消</button><button value="default" class="button primary">保存修改</button></div>
+      <label>鍚嶇О<input id="editKeyName" required></label>
+      <label class="check-label"><input id="editKeyEnabled" type="checkbox"> 鍏佽浣跨敤杩欎釜 Key</label>
+      <p class="help">瀹屾暣 Key 鏄剧ず鍦ㄦ湰鍦拌皟鐢?Key 鍒楄〃涓€傚闇€鏇存崲瀵嗛挜锛岃鏂板缓涓€涓?Key 鍚庡垹闄ゆ棫 Key銆?/p>
+      <div class="dialog-actions"><button type="button" data-dialog-close="keyEditDialog" class="button secondary">鍙栨秷</button><button value="default" class="button primary">淇濆瓨淇敼</button></div>
     </form>
   </dialog>
 

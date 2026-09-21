@@ -57,12 +57,16 @@ node src/server.js
 
 ---
 
-## 最近变更（两项增强）
+## 最近变更（三项增强）
 
 1. **同名模型可勾选参与轮询的上游子集**：模型选择器在「自动选择」模式下新增「轮询站点」勾选框，
    只让勾选的上游参与轮询；勾选数 < 2 时自动回退为全部站点（该保护目前仅在前端实现）。
 2. **请求日志改为可分页的追加式滚动日志**：请求明细从 `metrics.json` 内联数组迁移到
    `metrics-log.jsonl`（append-only，超上限 2 倍时压实回上限）；新增
    `GET /api/admin/metrics/logs?limit=&offset=` 分页接口；旧版内联日志首次启动自动迁移。
+3. **请求日志记录上游返回的结构化错误**：失败时每条日志带 `upstreamError`
+   （HTTP `status` 与上游提供的 `code` / `type` / `param` / `message`），并且
+   `attempts[].error` 记下**每一次尝试**分别被哪个上游以什么理由拒绝；
+   后台「请求日志」直接显示上游 `code`，悬停可看完整明细。
 
 详见 [指标与请求日志](metrics.md) 与 [模型路由与轮询](routing.md)。

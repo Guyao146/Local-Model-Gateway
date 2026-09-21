@@ -7,15 +7,23 @@ function errorMessage(body, fallback = '上游请求失败') {
   return messages.find((message) => typeof message === 'string' && message.length > 0) ?? fallback;
 }
 
-function errorCode(body, status) {
-  // type 是协议错误类别，不充当错误码；0 也是有效的上游 code。
+function upstreamCode(body) {
   const codes = [body?.error?.code, body?.response?.error?.code, body?.code];
   for (const code of codes) {
     if (typeof code === 'string' && code.trim()) return code.trim();
     if (typeof code === 'number' && Number.isFinite(code)) return String(code);
   }
+  return undefined;
+}
+
+function httpStatusCode(status) {
   const httpStatus = Number(status);
   return Number.isInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 599 ? String(httpStatus) : '502';
+}
+
+function errorCode(body, status) {
+  // type 是协议错误类别，不充当错误码；0 也是有效的上游 code。
+  return upstreamCode(body) ?? httpStatusCode(status);
 }
 
 function isErrorPayload(body, eventName = '') {
@@ -58,6 +66,30 @@ function formatErrorPayload(body, { prefix = '', requestId, status, eventName = 
   return { ...result, request_id: requestId };
 }
 
+// 请求日志用：把上游返回的错误体归一成 { status, code, type, param, message }。
+// code/type/param 只取上游真正提供的值（HTTP 状态码由调用方单独传入 status），
+// 这样日志里能区分「上游返回了什么」与「网关兜底推断的码」。
+function upstreamErrorDetails(body, status) {
+  const statusValue = Number(status);
+  const hasStatus = Number.isInteger(statusValue);
+  if (!isObject(body)) {
+    if (!hasStatus) return null;
+    return typeof body === 'string' && body.trim() ? { status: statusValue, message: body.trim() } : { status: statusValue };
+  }
+  const error = isObject(body.error) ? body.error : isObject(body.response?.error) ? body.response.error : null;
+  const code = upstreamCode(body);
+  const type = error?.type ?? (typeof body.type === 'string' && body.type !== 'error' ? body.type : undefined);
+  const param = error?.param ?? body.param;
+  const message = errorMessage(body, '');
+  const result = {};
+  if (hasStatus) result.status = statusValue;
+  if (code !== undefined) result.code = code;
+  if (typeof type === 'string' && type) result.type = type;
+  if (param !== undefined && param !== null) result.param = param;
+  if (message) result.message = message;
+  return Object.keys(result).length ? result : null;
+}
+
 function errorForProtocol(localProtocol, body, status) {
   const source = isObject(body) ? body : {};
   const details = isObject(source.error) ? source.error
@@ -93,5 +125,6 @@ module.exports = {
   formatErrorMessage,
   formatErrorPayload,
   errorForProtocol,
-  streamErrorForProtocol
+  streamErrorForProtocol,
+  upstreamErrorDetails
 };

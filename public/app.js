@@ -577,17 +577,32 @@ function renderLogDetailRow(diag) {
 }
 
 function renderLogRow(entry) {
-  const errorTitle = entry.error ? ` title="${escapeHtml(entry.error)}"` : '';
+  const upstreamError = entry.upstreamError || null;
+  const errorParts = [];
+  if (entry.error) errorParts.push(entry.error);
+  if (upstreamError) {
+    errorParts.push([
+      upstreamError.status ? `HTTP ${upstreamError.status}` : null,
+      upstreamError.code ? `code：${upstreamError.code}` : null,
+      upstreamError.type ? `type：${upstreamError.type}` : null,
+      upstreamError.param ? `param：${upstreamError.param}` : null
+    ].filter(Boolean).join(' | '));
+  }
+  const errorTitle = errorParts.length ? ` title="${escapeHtml(errorParts.join('\n'))}"` : '';
+  const upstreamCodeTag = upstreamError?.code ? `<span class="small-tag">code：${escapeHtml(upstreamError.code)}</span>` : '';
   const protocol = { openai: 'Chat', anthropic: 'Messages', responses: 'Responses' }[entry.protocol] || entry.protocol || '-';
   const model = entry.upstreamModel && entry.upstreamModel !== entry.model
     ? `<code>${escapeHtml(entry.model)}</code><span class="log-detail">→ ${escapeHtml(entry.upstreamModel)}</span>`
     : `<code>${escapeHtml(entry.model || '-')}</code>`;
-  const attempts = (entry.attempts || []).map((attempt) => `${attempt.upstream} (${attempt.status ?? '连接失败'})`).join(' → ');
+  const attempts = (entry.attempts || []).map((attempt) => {
+    const label = `${attempt.upstream} (${attempt.status ?? '连接失败'})`;
+    return attempt.error?.code ? `${label} · ${attempt.error.code}` : label;
+  }).join(' → ');
   const strategy = escapeHtml(STRATEGY_LABELS[entry.strategy] || entry.strategy || '故障转移');
   const attemptDetail = attempts ? `<span class="log-detail" title="${escapeHtml(attempts)}">${escapeHtml(attempts)}</span>` : '';
   const hasDiag = Boolean(entry.diagnostics);
   const rowClass = `log-row${hasDiag ? ' log-row-expandable' : ''}`;
-  const main = `<tr class="${rowClass}"><td><code>${escapeHtml(entry.id || '-')}</code>${hasDiag ? '<span class="small-tag">诊断</span>' : ''}</td><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td>${escapeHtml(protocol)}${entry.stream ? '<span class="small-tag">流式</span>' : ''}</td><td>${model}</td><td>${strategy}${attemptDetail}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="log-result ${entry.success ? 'success-text' : 'error-text'}"${errorTitle}>${entry.success ? '成功' : `失败：${escapeHtml(entry.error || '未知错误')}`}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`;
+  const main = `<tr class="${rowClass}"><td><code>${escapeHtml(entry.id || '-')}</code>${hasDiag ? '<span class="small-tag">诊断</span>' : ''}</td><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td>${escapeHtml(protocol)}${entry.stream ? '<span class="small-tag">流式</span>' : ''}</td><td>${model}</td><td>${strategy}${attemptDetail}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="log-result ${entry.success ? 'success-text' : 'error-text'}"${errorTitle}>${entry.success ? '成功' : `失败：${escapeHtml(entry.error || '未知错误')}`}${upstreamCodeTag}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`;
   return hasDiag ? main + renderLogDetailRow(entry.diagnostics) : main;
 }
 

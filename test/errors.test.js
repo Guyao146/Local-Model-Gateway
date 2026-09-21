@@ -6,7 +6,8 @@ const {
   formatErrorMessage,
   formatErrorPayload,
   errorForProtocol,
-  streamErrorForProtocol
+  streamErrorForProtocol,
+  upstreamErrorDetails
 } = require('../src/errors');
 
 const context = { prefix: '[TestGateway]', requestId: 'req_test', status: 429 };
@@ -77,6 +78,17 @@ assert.equal(flatFormatted.error, undefined);
 assert.equal(flatFormatted.message, '[TestGateway] [request_id=req_test] [code=invalid_request] bad parameter');
 assert.equal(flatFormatted.param, 'model');
 assert.equal(flatFormatted.sequence_number, 1);
+
+for (const [body, status, expected] of [
+  [source, 429, { status: 429, code: 'quota_exceeded', type: 'rate_limit_error', message: '配额不足\n请稍后重试' }],
+  [flatError, 400, { status: 400, code: 'invalid_request', param: 'model', message: 'bad parameter' }],
+  [{ error: { code: 0, message: 'numeric zero' } }, 400, { status: 400, code: '0', message: 'numeric zero' }],
+  [nativeFailure, 200, { status: 200, code: 'server_error', type: 'response.failed', message: 'failed response' }],
+  [{ error: 'string error' }, 400, { status: 400, message: 'string error' }],
+  [null, 503, { status: 503 }],
+  [null, 200, { status: 200 }],
+  [undefined, undefined, null]
+]) assert.deepEqual(upstreamErrorDetails(body, status), expected, '上游错误应只保留实际提供的字段');
 
 for (const protocol of ['openai', 'responses', 'anthropic']) {
   const converted = errorForProtocol(protocol, source, 429);

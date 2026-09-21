@@ -42,7 +42,8 @@ const {
   isErrorPayload,
   formatErrorPayload,
   errorForProtocol,
-  streamErrorForProtocol
+  streamErrorForProtocol,
+  upstreamErrorDetails
 } = require('./errors');
 const {
   createDiagnostics,
@@ -1644,8 +1645,8 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     captureUpstreamRequest(diag, requestInfo);
     if (requestInfo.requiresNative && (upstream.protocol !== 'openai' || requestInfo.responsesMode === 'chat')) {
       upstreamResponse = null;
-      attempts.push({ upstream: upstream.name, status: 400 });
       lastError = { status: 400, body: { error: responsesNativeCapabilityError(upstream) } };
+      attempts.push({ upstream: upstream.name, status: 400, error: upstreamErrorDetails(lastError.body, 400) });
       continue;
     }
     log('route request', {
@@ -1678,12 +1679,14 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
         attempts.push({ upstream: upstream.name, status: upstreamResponse.status, fallback: 'chat_completions' });
       }
       if (requestInfo.nativeResponses && requestInfo.requiresNative && responsesNativeUnsupported(upstreamResponse.status)) {
+        const unsupportedStatus = upstreamResponse.status;
         const unsupportedBody = await readResponseJson(upstreamResponse);
         upstreamResponse = null;
         lastError = {
           status: 400,
           body: { error: { ...responsesNativeCapabilityError(upstream), upstream_error: errorMessage(unsupportedBody) } }
         };
+        attempts[attempts.length - 1].error = upstreamErrorDetails(unsupportedBody, unsupportedStatus);
         if (index < maxAttempts - 1) continue;
         break;
       }
@@ -1707,6 +1710,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
 
     const body = await readResponseJson(upstreamResponse);
     lastError = { status: upstreamResponse.status, body };
+    attempts[attempts.length - 1].error = upstreamErrorDetails(body, upstreamResponse.status);
     if (shouldRetryUpstream(upstreamResponse.status)) markUpstreamFailure(upstream, upstreamResponse.status, errorMessage(body));
     if (shouldRetryUpstream(upstreamResponse.status) && index < maxAttempts - 1) {
       log('upstream returned retryable status, trying fallback', { upstream: upstream.name, status: upstreamResponse.status });
@@ -1723,7 +1727,8 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
       status: failure.status,
       upstream: upstream?.name,
       upstreamModel,
-      error: errorMessage(failure.body, '所有上游都不可用')
+      error: errorMessage(failure.body, '所有上游都不可用'),
+      upstreamError: upstreamErrorDetails(failure.body, failure.status)
     });
     const errorResponse = errorForProtocol(localProtocol, failure.body, failure.status);
     logRequestError(requestId, failure.status, errorResponse);
@@ -1738,7 +1743,14 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
       // 有些上游在 HTTP 200 内返回失败对象；不能经转换后变成空的成功回复。
       const result = (nativeResponses && localProtocol === 'responses') || (!nativeResponses && localProtocol === upstream.protocol)
         ? body : errorForProtocol(localProtocol, body, 502);
-      finishMetrics({ success: false, status: 502, upstream: upstream.name, upstreamModel, error: errorMessage(body) });
+      finishMetrics({
+        success: false,
+        status: 502,
+        upstream: upstream.name,
+        upstreamModel,
+        error: errorMessage(body),
+        upstreamError: upstreamErrorDetails(body, upstreamResponse.status)
+      });
       sendJsonWithRequestId(res, upstreamResponse.status, result, requestId);
       return;
     }
@@ -1801,7 +1813,14 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     finishMetrics({ success: true, status: 200, upstream: upstream.name, upstreamModel, usage: streamUsage });
   } catch (error) {
     log('stream error', { requestId, message: error.message });
-    finishMetrics({ success: false, status: 502, upstream: upstream.name, upstreamModel, error: error.message });
+    finishMetrics({
+      success: false,
+      status: 502,
+      upstream: upstream.name,
+      upstreamModel,
+      error: error.message,
+      upstreamError: upstreamErrorDetails(error.upstreamBody, upstreamResponse?.status)
+    });
     if (!res.writableEnded) {
       if (!error.forwarded) {
         const body = error.upstreamBody || { error: { message: error.message, type: 'upstream_error' } };

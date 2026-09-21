@@ -57,9 +57,10 @@ npm.cmd test
 1. **轮询池「至少两站」保护仅在前端**：直接调 `PUT /api/admin/model-selections`
    提交 <2 个 `upstreamIds` 后端不校验。建议在 `saveModelSelections` 增加子集校验：
    过滤不存在/已停用站，长度 <2 时回退为全部站点。
-2. **JSONL 压实与迁移无专项单测**：目前靠临时脚本验证，建议新增
-   `test/metrics.test.js`，直接对 `metrics.js` 的 `recordRequest/getLogs/clearMetrics`
-   以及迁移、压实做单元断言（可注入临时 `DATA_DIR`）。
+2. **~~JSONL 压实与迁移无专项单测~~（部分完成）**：`test/metrics.test.js` 已用注入的
+   临时 `DATA_DIR` 覆盖 `recordRequest/getLogs/importUsageRecords` 与
+   `upstreamError`/`attempts[].error` 的归一化；**JSONL 压实与旧版内联日志迁移仍未覆盖**，
+   只靠临时脚本验证，建议补对 `appendLog` 触发压实、`loadLogs` 迁移路径的断言。
 3. **~~`.gitignore` 未包含 `data/metrics-log.jsonl`~~**：已修复，运行时日志不会被提交。
 4. **模型选择器与手工路由冲突**：同名冲突会在保存时报错，但前端反馈路径可再打磨。
 5. **日志只保留成功/失败的摘要**：不含请求体/响应体，若需排查内容级问题需另加审计日志。
@@ -76,3 +77,12 @@ npm.cmd test
   （`renderLogRow`/`updateLogSummary`/`loadMoreLogs`）、`public/index.html`
   （`requestLogSummary` + 加载更多按钮）、`public/styles.css`（`.log-more`）、
   `README.md` 两处说明、`test/model-groups.test.js` 两条断言。
+- 请求日志记录上游返回的错误：`src/errors.js` 新增 `upstreamErrorDetails`
+  （`errorCode` 拆出 `upstreamCode`/`httpStatusCode` 复用），`src/metrics.js` 的
+  `recordRequest`/`cloneLog`/`normalizeImportedLog`/`normalizeAttempts` 收敛
+  `upstreamError` 与 `attempts[].error`（字段截断），`src/server.js` 在上游失败、
+  HTTP 200 内失败、流式失败、Responses 原生能力不支持四条路径采集，
+  `public/app.js` 的 `renderLogRow` 显示上游 code（结果列标签 + 悬停明细 +
+  每次尝试的 code），`wiki/metrics.md` 字段说明；测试为新增 `test/metrics.test.js`
+  与 `test/errors.test.js`、`gateway.integration.test.js`、`stream.integration.test.js`
+  的断言（`npm test` 已纳入 `test/metrics.test.js`）。

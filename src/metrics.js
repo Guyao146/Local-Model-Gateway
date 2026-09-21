@@ -148,10 +148,28 @@ function normalizeUsage(usage = {}) {
 
 function normalizeAttempts(attempts) {
   if (!Array.isArray(attempts)) return [];
-  return attempts.slice(0, MAX_ATTEMPTS_PER_LOG).map((attempt) => ({
-    upstream: String(attempt.upstream || '未知上游').slice(0, 120),
-    status: Number.isInteger(attempt.status) ? attempt.status : null
-  }));
+  return attempts.slice(0, MAX_ATTEMPTS_PER_LOG).map((attempt) => {
+    const item = {
+      upstream: String(attempt.upstream || '未知上游').slice(0, 120),
+      status: Number.isInteger(attempt.status) ? attempt.status : null
+    };
+    const error = normalizeErrorDetails(attempt.error);
+    if (error) item.error = error;
+    return item;
+  });
+}
+
+// 上游返回错误的结构化摘要（状态码 / code / type / param / 信息）。
+// 只保留上游真正提供的字段并统一截断，避免单条日志膨胀。
+function normalizeErrorDetails(error) {
+  if (error === null || typeof error !== 'object' || Array.isArray(error)) return undefined;
+  const result = {};
+  if (Number.isInteger(error.status)) result.status = error.status;
+  if (error.code !== undefined && error.code !== null) result.code = String(error.code).slice(0, 120);
+  if (error.type !== undefined && error.type !== null) result.type = String(error.type).slice(0, 120);
+  if (error.param !== undefined && error.param !== null) result.param = String(error.param).slice(0, 120);
+  if (typeof error.message === 'string' && error.message.length > 0) result.message = error.message.slice(0, 300);
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 // 请求诊断：记录发往上游的请求体与上游/客户端的帧样本，用于排查协议转换问题。
@@ -178,6 +196,7 @@ function normalizeDiagnostics(diag) {
 function recordRequest(entry) {
   const usage = normalizeUsage(entry.usage);
   const attempts = normalizeAttempts(entry.attempts);
+  const upstreamError = normalizeErrorDetails(entry.upstreamError);
   const success = entry.success === true;
   const logEntry = {
     id: String(entry.id || `req_${Date.now()}`),
@@ -196,6 +215,7 @@ function recordRequest(entry) {
     attempts,
     usage,
     ...(entry.error ? { error: String(entry.error).slice(0, 500) } : {}),
+    ...(upstreamError ? { upstreamError } : {}),
     ...(normalizeDiagnostics(entry.diag) ? { diagnostics: normalizeDiagnostics(entry.diag) } : {})
   };
 
@@ -240,7 +260,22 @@ function normalizeImportedLog(entry) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw Object.assign(new Error('用量记录格式无效'), { statusCode: 400 });
   const id = String(entry.id || '').trim();
   if (!id || id.length > 120) throw Object.assign(new Error('用量记录缺少有效的请求 ID'), { statusCode: 400 });
-  return { ...entry, id, usage: normalizeUsage(entry.usage), attempts: normalizeAttempts(entry.attempts) };
+  const normalized = { ...entry, id, usage: normalizeUsage(entry.usage), attempts: normalizeAttempts(entry.attempts) };
+  const importedUpstreamError = normalizeErrorDetails(entry.upstreamError);
+  if (importedUpstreamError) normalized.upstreamError = importedUpstreamError;
+  return normalized;
+}
+
+function cloneLog(entry) {
+  return {
+    ...entry,
+    attempts: Array.isArray(entry.attempts) ? entry.attempts.map((attempt) => ({
+      ...attempt,
+      ...(attempt.error ? { error: { ...attempt.error } } : {})
+    })) : [],
+    usage: { ...(entry.usage || {}) },
+    ...(entry.upstreamError ? { upstreamError: { ...entry.upstreamError } } : {})
+  };
 }
 
 function importUsageRecords(records) {
@@ -281,14 +316,6 @@ function importUsageRecords(records) {
   logFileLines = chronological.length;
   saveMetrics();
   return { imported: accepted.length, duplicates, retained: logs.length, metrics: getMetrics() };
-}
-
-function cloneLog(entry) {
-  return {
-    ...entry,
-    attempts: Array.isArray(entry.attempts) ? entry.attempts.map((attempt) => ({ ...attempt })) : [],
-    usage: { ...(entry.usage || {}) }
-  };
 }
 
 function normalizeLimit(value) {

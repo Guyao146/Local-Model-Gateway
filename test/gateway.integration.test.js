@@ -380,6 +380,13 @@ async function main() {
     const plainErrorLog = errorLogs.body.items.find((entry) => entry.id === plainError.body.request_id);
     assert.ok(plainErrorLog, '消息里的请求 ID 应可用于查询请求日志');
     assert.equal(plainErrorLog.error, 'model 不能为空', '客户端装饰不能改写日志中的原始错误');
+    assert.equal(plainErrorLog.upstreamError, undefined, '网关本地错误不应伪造上游错误信息');
+    const rejectedLog = errorLogs.body.items.find((entry) => entry.id === 'error-code-0');
+    assert.ok(rejectedLog, '上游返回的错误应记入请求日志');
+    assert.deepEqual(rejectedLog.upstreamError, { status: 400, code: '0', message: 'numeric zero' }, '日志记录上游返回的结构化错误');
+    assert.ok(rejectedLog.attempts.some((attempt) => attempt.error?.code === '0'), '每次上游尝试都应带上游错误码');
+    const softFailureLog = errorLogs.body.items.find((entry) => entry.id === 'error-code-6');
+    assert.deepEqual(softFailureLog.upstreamError, { status: 200, code: 'soft_failure', message: 'error inside HTTP 200' }, 'HTTP 200 内的失败也要记录上游错误');
     const responsesResponse = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: { Authorization: `Bearer ${config.localApiKeys[0].key}` }, body: JSON.stringify({ model: 'test-local', instructions: 'Be concise', input: 'hello responses', max_output_tokens: 40 })
     });

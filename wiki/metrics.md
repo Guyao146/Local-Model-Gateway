@@ -44,13 +44,21 @@
   "stream": false,
   "success": true,
   "failover": false,          // attempts.length > 1
-  "attempts": [{ "upstream": "...", "status": 503 }],  // 最多保留 12 条
+  "attempts": [{ "upstream": "...", "status": 503, "error": { "status": 503, "code": "...", "type": "...", "param": "...", "message": "..." } }],  // 最多保留 12 条
   "usage": { "promptTokens": 0, "completionTokens": 0, "totalTokens": 0 },
-  "error": "错误信息（仅失败时）"
+  "error": "错误信息（仅失败时）",
+  "upstreamError": { "status": 503, "code": "...", "type": "...", "param": "...", "message": "..." }  // 仅失败且上游返回错误时
 }
 ```
 
 日志只含脱敏元数据与 token 数字，**不含请求内容或密钥**。
+
+- `error` 是给客户端看的错误信息原文；`upstreamError` 记录上游**实际返回**的结构化错误，
+  含 HTTP `status` 与上游提供的 `code` / `type` / `param` / `message`（缺失的字段不出现），
+  例如 `{ "status": 400, "code": "upstream_request_rejected", "message": "..." }`。
+  `code` 只取上游给出的值，不用 HTTP 状态码兜底——状态码单独记在 `status` 里。
+- `attempts[].error` 记录**每一次尝试**被上游拒绝的原因，用于排查故障转移中各站点分别为什么失败；
+  连接失败等没有上游响应的情况不记录该字段。
 
 管理页面可将最近 100 条记录或当前日志上限内的全部记录导出为 JSON。导出内容包含
 聚合 totals、byUpstream 和 records 明细；`records` 按时间正序排列，便于归档或分析。
