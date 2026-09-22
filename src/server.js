@@ -43,6 +43,7 @@ const {
   formatErrorPayload,
   errorForProtocol,
   streamErrorForProtocol,
+  appendRetrySummary,
   upstreamErrorDetails
 } = require('./errors');
 const {
@@ -213,6 +214,23 @@ function sleep(milliseconds) {
   return milliseconds > 0 ? new Promise((resolve) => setTimeout(resolve, milliseconds)) : Promise.resolve();
 }
 
+// 汇总一次请求里所有失败的尝试，形如「已依次尝试：primary×2、fallback×1」。
+// 只在真的发生过原地重试时返回内容：单纯的故障转移（每站一次）不追加，
+// 避免改变现有错误信息的形态。
+function retrySummary(attempts) {
+  if (!Array.isArray(attempts) || attempts.length === 0) return '';
+  if (!attempts.some((attempt) => Number(attempt.retry) > 0)) return '';
+  const grouped = [];
+  for (const attempt of attempts) {
+    const name = String(attempt.upstream || '未知上游');
+    const found = grouped.find((item) => item.upstream === name);
+    if (found) found.count += 1;
+    else grouped.push({ upstream: name, count: 1 });
+  }
+  if (grouped.length < 2 && grouped[0]?.count < 2) return '';
+  return `已依次尝试：${grouped.map((item) => `${item.upstream}×${item.count}`).join('、')}`;
+}
+
 function settingsFromBody(body, existing = config.settings) {
   const next = { ...existing, ...(body || {}) };
   if (next.host !== undefined && (typeof next.host !== 'string' || !next.host.trim())) {
@@ -221,6 +239,7 @@ function settingsFromBody(body, existing = config.settings) {
   const ranges = [
     ['port', 1, 65535, '端口'],
     ['upstreamTimeoutMs', 1000, 3600000, '上游超时'],
+    ['upstreamRetries', 0, 10, '每个上游重试次数'],
     ['maxFallbackAttempts', 0, 12, '最大备用尝试次数'],
     ['retryDelayMs', 0, 30000, '重试等待时间'],
     ['circuitBreakerFailureThreshold', 1, 20, '熔断失败阈值'],
@@ -1634,8 +1653,13 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   let upstream = null;
   let lastError = null;
   let nativeResponses = false;
+  // 每个上游失败后原地重试的次数；0 表示失败即切换（保持旧行为）。
+  const maxUpstreamRetries = settings.upstreamRetries;
+  let attemptCount = 0;
+  // 4xx 参数/鉴权类错误不可重试，也不该换站掩盖配置问题。
+  let stopRequesting = false;
 
-  for (let index = 0; index < maxAttempts; index += 1) {
+  for (let index = 0; index < maxAttempts && !stopRequesting; index += 1) {
     upstream = upstreams[index];
     const requestInput = routeThinkingLevel === 'auto' && input.thinkingLevel === undefined
       ? input
@@ -1644,93 +1668,113 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     const requestInfo = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { requestHeaders: req.headers, responsesMode: routeResponsesMode });
     captureUpstreamRequest(diag, requestInfo);
     if (requestInfo.requiresNative && (upstream.protocol !== 'openai' || requestInfo.responsesMode === 'chat')) {
+      // 协议能力不符是配置问题，重试同一个上游结果相同，直接换站。
       upstreamResponse = null;
       lastError = { status: 400, body: { error: responsesNativeCapabilityError(upstream) } };
-      attempts.push({ upstream: upstream.name, status: 400, error: upstreamErrorDetails(lastError.body, 400) });
+      attempts.push({ upstream: upstream.name, status: 400, retry: 0, error: upstreamErrorDetails(lastError.body, 400) });
       continue;
     }
-    log('route request', {
-      localProtocol,
-      model: localModel,
-      upstream: upstream.name,
-      upstreamModel,
-      stream: wantsStream,
-      attempt: index + 1,
-      totalCandidates: upstreams.length
-    });
-    try {
-      upstreamResponse = await fetchUpstream(requestInfo);
-      nativeResponses = requestInfo.nativeResponses;
-      attempts.push({ upstream: upstream.name, status: upstreamResponse.status });
-      if (
-        requestInfo.nativeResponses
-        && requestInfo.responsesMode !== 'native'
-        && responsesNativeUnsupported(upstreamResponse.status)
-        && !requestInfo.requiresNative
-      ) {
-        log('upstream does not expose native Responses API, falling back to Chat Completions', {
-          upstream: upstream.name,
-          status: upstreamResponse.status
-        });
-        resetResponseBody(upstreamResponse);
-        const fallbackRequest = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { forceChat: true, requestHeaders: req.headers, responsesMode: routeResponsesMode });
-        upstreamResponse = await fetchUpstream(fallbackRequest);
-        nativeResponses = false;
-        attempts.push({ upstream: upstream.name, status: upstreamResponse.status, fallback: 'chat_completions' });
-      }
-      if (requestInfo.nativeResponses && requestInfo.requiresNative && responsesNativeUnsupported(upstreamResponse.status)) {
-        const unsupportedStatus = upstreamResponse.status;
-        const unsupportedBody = await readResponseJson(upstreamResponse);
-        upstreamResponse = null;
-        lastError = {
-          status: 400,
-          body: { error: { ...responsesNativeCapabilityError(upstream), upstream_error: errorMessage(unsupportedBody) } }
-        };
-        attempts[attempts.length - 1].error = upstreamErrorDetails(unsupportedBody, unsupportedStatus);
-        if (index < maxAttempts - 1) continue;
+    // 同一上游原地重试：网络抖动、超时或可重试状态码先重试本站，
+    // 重试次数用尽再切换到下一优先级的上游。
+    for (let retry = 0; ; retry += 1) {
+      log('route request', {
+        localProtocol,
+        model: localModel,
+        upstream: upstream.name,
+        upstreamModel,
+        stream: wantsStream,
+        attempt: attemptCount + 1,
+        retry,
+        totalCandidates: upstreams.length
+      });
+      attemptCount += 1;
+      try {
+        upstreamResponse = await fetchUpstream(requestInfo);
+        nativeResponses = requestInfo.nativeResponses;
+        attempts.push({ upstream: upstream.name, status: upstreamResponse.status, retry });
+        if (
+          requestInfo.nativeResponses
+          && requestInfo.responsesMode !== 'native'
+          && responsesNativeUnsupported(upstreamResponse.status)
+          && !requestInfo.requiresNative
+        ) {
+          log('upstream does not expose native Responses API, falling back to Chat Completions', {
+            upstream: upstream.name,
+            status: upstreamResponse.status,
+            retry
+          });
+          resetResponseBody(upstreamResponse);
+          const fallbackRequest = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { forceChat: true, requestHeaders: req.headers, responsesMode: routeResponsesMode });
+          upstreamResponse = await fetchUpstream(fallbackRequest);
+          nativeResponses = false;
+          attempts.push({ upstream: upstream.name, status: upstreamResponse.status, retry, fallback: 'chat_completions' });
+        }
+        if (requestInfo.nativeResponses && requestInfo.requiresNative && responsesNativeUnsupported(upstreamResponse.status)) {
+          const unsupportedStatus = upstreamResponse.status;
+          const unsupportedBody = await readResponseJson(upstreamResponse);
+          upstreamResponse = null;
+          lastError = {
+            status: 400,
+            body: { error: { ...responsesNativeCapabilityError(upstream), upstream_error: errorMessage(unsupportedBody) } }
+          };
+          attempts[attempts.length - 1].error = upstreamErrorDetails(unsupportedBody, unsupportedStatus);
+          break;
+        }
+      } catch (error) {
+        const message = error.name === 'AbortError' ? '上游请求超时' : `无法连接上游：${error.message}`;
+        attempts.push({ upstream: upstream.name, status: 502, retry, error: upstreamErrorDetails({ message }, 502) });
+        markUpstreamFailure(upstream, 502, message);
+        lastError = { status: 502, body: { message } };
+        if (retry < maxUpstreamRetries) {
+          log('upstream unavailable, retrying same upstream', { upstream: upstream.name, retry, message });
+          await sleep(settings.retryDelayMs);
+          continue;
+        }
+        log('upstream unavailable, trying fallback', { upstream: upstream.name, retry, message });
         break;
       }
-    } catch (error) {
-      const message = error.name === 'AbortError' ? '上游请求超时' : `无法连接上游：${error.message}`;
-      attempts.push({ upstream: upstream.name, status: 502 });
-      markUpstreamFailure(upstream, 502, message);
-      lastError = { status: 502, body: { message } };
-      if (index < maxAttempts - 1) {
-        log('upstream unavailable, trying fallback', { upstream: upstream.name, message });
+
+      if (upstreamResponse.ok) {
+        markUpstreamSuccess(upstream);
+        break;
+      }
+
+      const body = await readResponseJson(upstreamResponse);
+      lastError = { status: upstreamResponse.status, body };
+      attempts[attempts.length - 1].error = upstreamErrorDetails(body, upstreamResponse.status);
+      if (!shouldRetryUpstream(upstreamResponse.status)) {
+        // 4xx 参数/鉴权错误：重试和换站都只会掩盖配置问题，直接返回。
+        log('upstream returned non-retryable status', { upstream: upstream.name, status: upstreamResponse.status, retry });
+        stopRequesting = true;
+        break;
+      }
+      markUpstreamFailure(upstream, upstreamResponse.status, errorMessage(body));
+      if (retry < maxUpstreamRetries) {
+        log('upstream returned retryable status, retrying same upstream', { upstream: upstream.name, status: upstreamResponse.status, retry });
         await sleep(settings.retryDelayMs);
         continue;
       }
+      log('upstream returned retryable status, trying fallback', { upstream: upstream.name, status: upstreamResponse.status, retry });
       break;
     }
-
-    if (upstreamResponse.ok) {
-      markUpstreamSuccess(upstream);
-      break;
-    }
-
-    const body = await readResponseJson(upstreamResponse);
-    lastError = { status: upstreamResponse.status, body };
-    attempts[attempts.length - 1].error = upstreamErrorDetails(body, upstreamResponse.status);
-    if (shouldRetryUpstream(upstreamResponse.status)) markUpstreamFailure(upstream, upstreamResponse.status, errorMessage(body));
-    if (shouldRetryUpstream(upstreamResponse.status) && index < maxAttempts - 1) {
-      log('upstream returned retryable status, trying fallback', { upstream: upstream.name, status: upstreamResponse.status });
-      await sleep(settings.retryDelayMs);
-      continue;
-    }
-    break;
+    if (upstreamResponse && upstreamResponse.ok) break;
+    if (!stopRequesting && index < maxAttempts - 1) await sleep(settings.retryDelayMs);
   }
 
   if (!upstreamResponse || !upstreamResponse.ok) {
     const failure = lastError || { status: 502, body: { message: '所有上游都不可用' } };
+    // 把「试了哪些站、各几次」写进返回给客户端的错误信息，方便定位是重试耗尽还是切换耗尽。
+    const summary = retrySummary(attempts);
+    const failureBody = appendRetrySummary(failure.body, summary);
     finishMetrics({
       success: false,
       status: failure.status,
       upstream: upstream?.name,
       upstreamModel,
-      error: errorMessage(failure.body, '所有上游都不可用'),
+      error: errorMessage(failureBody, '所有上游都不可用'),
       upstreamError: upstreamErrorDetails(failure.body, failure.status)
     });
-    const errorResponse = errorForProtocol(localProtocol, failure.body, failure.status);
+    const errorResponse = errorForProtocol(localProtocol, failureBody, failure.status);
     logRequestError(requestId, failure.status, errorResponse);
     sendJsonWithRequestId(res, failure.status, errorResponse, requestId);
     return;
@@ -2388,7 +2432,15 @@ async function handleAdmin(req, res, pathname) {
   }
   if (req.method === 'PUT' && pathname === '/api/admin/settings') {
     const body = await readBody(req);
-    config.settings = settingsFromBody(body, config.settings);
+    let settings;
+    try {
+      settings = settingsFromBody(body, config.settings);
+    } catch (error) {
+      // 设置项超出范围时给出 400，而不是让异常冒泡成 500。
+      sendJson(res, 400, { error: { message: error.message } });
+      return;
+    }
+    config.settings = settings;
     saveConfig(config);
     sendJson(res, 200, config.settings);
     return;

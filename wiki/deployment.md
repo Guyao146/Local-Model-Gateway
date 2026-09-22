@@ -103,6 +103,7 @@ Authentik 配置要点（详见 README）：
 | 设置 | 范围 | 默认 |
 | --- | --- | --- |
 | 上游超时 `upstreamTimeoutMs` | 1000–3600000 ms | 600000 |
+| 每个上游重试次数 `upstreamRetries` | 0–10（0 不重试） | 0 |
 | 最大备用尝试 `maxFallbackAttempts` | 0–12（0 不限） | 0 |
 | 切换前等待 `retryDelayMs` | 0–30000 ms | 0 |
 | 熔断失败阈值 `circuitBreakerFailureThreshold` | 1–20 | 3 |

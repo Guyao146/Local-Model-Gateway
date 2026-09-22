@@ -468,6 +468,7 @@ function render() {
 
   const settings = state.config.settings || {};
   $('#upstreamTimeoutMs').value = settings.upstreamTimeoutMs ?? 600000;
+  $('#upstreamRetries').value = settings.upstreamRetries ?? 0;
   $('#maxFallbackAttempts').value = settings.maxFallbackAttempts ?? 0;
   $('#retryDelayMs').value = settings.retryDelayMs ?? 0;
   $('#circuitBreakerFailureThreshold').value = settings.circuitBreakerFailureThreshold ?? 3;
@@ -596,7 +597,9 @@ function renderLogRow(entry) {
     : `<code>${escapeHtml(entry.model || '-')}</code>`;
   const attempts = (entry.attempts || []).map((attempt) => {
     const label = `${attempt.upstream} (${attempt.status ?? '连接失败'})`;
-    return attempt.error?.code ? `${label} · ${attempt.error.code}` : label;
+    // 同一上游的第 N 次原地重试，让「重试→切换」的顺序在日志里可读。
+    const retryTag = attempt.retry ? ` · 第${attempt.retry + 1}次` : '';
+    return attempt.error?.code ? `${label}${retryTag} · ${attempt.error.code}` : `${label}${retryTag}`;
   }).join(' → ');
   const strategy = escapeHtml(STRATEGY_LABELS[entry.strategy] || entry.strategy || '故障转移');
   const attemptDetail = attempts ? `<span class="log-detail" title="${escapeHtml(attempts)}">${escapeHtml(attempts)}</span>` : '';
@@ -1060,6 +1063,7 @@ async function importUsageFile(file) {
 async function saveSettings() {
   const payload = {
     upstreamTimeoutMs: Number($('#upstreamTimeoutMs').value),
+    upstreamRetries: Number($('#upstreamRetries').value),
     maxFallbackAttempts: Number($('#maxFallbackAttempts').value),
     retryDelayMs: Number($('#retryDelayMs').value),
     circuitBreakerFailureThreshold: Number($('#circuitBreakerFailureThreshold').value),

@@ -49,7 +49,7 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="backup">配置备份</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.1.2</strong></div>
+        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.2.0</strong></div>
       </aside>
 
       <div class="content">
@@ -99,9 +99,10 @@
           <div><h2>可靠性设置</h2></div>
           <button id="saveSettingsButton" class="button primary">保存设置</button>
         </div>
-        <p class="help">控制上游请求等待时间和故障转移行为。最大备用尝试次数为 0 时表示不限制，设置修改立即保存。</p>
+        <p class="help">控制上游请求等待时间和故障转移行为。每个上游失败后先原地重试（同一上游重试次数），重试次数用尽再切换到下一优先级的备用上游；最大备用尝试次数为 0 时表示不限制，设置修改立即保存。</p>
         <div class="settings-grid">
           <label>上游超时（毫秒）<input id="upstreamTimeoutMs" type="number" min="1000" max="3600000" step="1000"></label>
+          <label>每个上游重试次数<input id="upstreamRetries" type="number" min="0" max="10" step="1"></label>
           <label>最大备用尝试次数<input id="maxFallbackAttempts" type="number" min="0" max="12" step="1"></label>
           <label>切换前等待（毫秒）<input id="retryDelayMs" type="number" min="0" max="30000" step="100"></label>
           <label>熔断失败阈值<input id="circuitBreakerFailureThreshold" type="number" min="1" max="20" step="1"></label>

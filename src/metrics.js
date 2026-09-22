@@ -153,6 +153,10 @@ function normalizeAttempts(attempts) {
       upstream: String(attempt.upstream || '未知上游').slice(0, 120),
       status: Number.isInteger(attempt.status) ? attempt.status : null
     };
+    // retry 是同一上游的第几次原地重试（0 = 首次），用来还原「重试→切换」的顺序。
+    const retry = Number(attempt.retry);
+    if (Number.isInteger(retry) && retry > 0) item.retry = retry;
+    if (typeof attempt.fallback === 'string' && attempt.fallback) item.fallback = attempt.fallback.slice(0, 60);
     const error = normalizeErrorDetails(attempt.error);
     if (error) item.error = error;
     return item;
@@ -211,7 +215,8 @@ function recordRequest(entry) {
     durationMs: Math.max(0, Math.round(numberOrZero(entry.durationMs))),
     stream: entry.stream === true,
     success,
-    failover: attempts.length > 1,
+    // failover 表示真的换了上游：原地重试同一个站不算切换。
+    failover: new Set(attempts.map((attempt) => attempt.upstream)).size > 1,
     attempts,
     usage,
     ...(entry.error ? { error: String(entry.error).slice(0, 500) } : {}),

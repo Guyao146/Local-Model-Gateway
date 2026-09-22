@@ -7,6 +7,7 @@ const {
   formatErrorPayload,
   errorForProtocol,
   streamErrorForProtocol,
+  appendRetrySummary,
   upstreamErrorDetails
 } = require('../src/errors');
 
@@ -108,5 +109,23 @@ assert.deepEqual(streamErrorForProtocol('responses', source), {
 assert.equal(streamErrorForProtocol('responses', { error: { message: 'connection reset' } }).code, '502');
 assert.equal(streamErrorForProtocol('anthropic', source).error.type, 'rate_limit_error');
 assert.equal(streamErrorForProtocol('openai', source).error.code, 'quota_exceeded');
+
+assert.equal(appendRetrySummary(source, ''), source, '没有重试摘要时原样返回');
+const summary = '已依次尝试：primary×2、fallback×1';
+const nested = appendRetrySummary(source, summary);
+assert.equal(nested.error.message, `配额不足\n请稍后重试（${summary}）`);
+assert.equal(nested.error.code, 'quota_exceeded', 'code 必须保持原值');
+assert.equal(nested.error.type, 'rate_limit_error', 'type 必须保持原值');
+assert.equal(nested.error.param, null, 'param 必须保持原值');
+assert.equal(nested.extra, 'preserved', '其余字段必须保留');
+assert.equal(source.error.message, '配额不足\n请稍后重试', '不得修改原始对象');
+const flat = appendRetrySummary(flatError, summary);
+assert.equal(flat.message, `bad parameter（${summary}）`);
+assert.equal(flat.code, 'invalid_request', '平铺错误的 code 必须保持原值');
+assert.equal(flat.type, 'error');
+assert.equal(flat.param, 'model');
+assert.equal(flat.sequence_number, 1);
+const textOnly = appendRetrySummary({ message: '无法连接上游' }, summary);
+assert.equal(textOnly.message, `无法连接上游（${summary}）`);
 
 console.log('error formatting tests passed');

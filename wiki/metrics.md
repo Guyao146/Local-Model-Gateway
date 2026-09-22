@@ -43,8 +43,8 @@
   "durationMs": 1234,
   "stream": false,
   "success": true,
-  "failover": false,          // attempts.length > 1
-  "attempts": [{ "upstream": "...", "status": 503, "error": { "status": 503, "code": "...", "type": "...", "param": "...", "message": "..." } }],  // 最多保留 12 条
+  "failover": false,          // 尝试过多个不同上游
+  "attempts": [{ "upstream": "...", "status": 503, "retry": 0, "error": { ... } }],  // 按尝试顺序，最多保留 12 条；retry > 0 表示同一上游的第 N 次原地重试
   "usage": { "promptTokens": 0, "completionTokens": 0, "totalTokens": 0 },
   "error": "错误信息（仅失败时）",
   "upstreamError": { "status": 503, "code": "...", "type": "...", "param": "...", "message": "..." }  // 仅失败且上游返回错误时

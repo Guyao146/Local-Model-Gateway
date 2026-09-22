@@ -90,6 +90,18 @@ function upstreamErrorDetails(body, status) {
   return Object.keys(result).length ? result : null;
 }
 
+// 所有上游都失败时，把「依次试了哪些站、各几次」追加到错误信息末尾，
+// 让客户端知道失败发生在重试/切换的哪一步。只覆盖 message：
+// code/type/param 等结构化字段保持原值，不影响已有的错误装饰逻辑。
+function appendRetrySummary(body, summary) {
+  if (!summary) return body;
+  const base = errorMessage(body, '');
+  const message = base ? `${base}（${summary}）` : summary;
+  if (!isObject(body)) return { message };
+  if (isObject(body.error)) return { ...body, error: { ...body.error, message } };
+  return { ...body, message };
+}
+
 function errorForProtocol(localProtocol, body, status) {
   const source = isObject(body) ? body : {};
   const details = isObject(source.error) ? source.error
@@ -126,5 +138,6 @@ module.exports = {
   formatErrorPayload,
   errorForProtocol,
   streamErrorForProtocol,
+  appendRetrySummary,
   upstreamErrorDetails
 };
