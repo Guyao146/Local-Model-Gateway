@@ -14,11 +14,25 @@ const state = {
 state.activeTab = 'overview';
 const $ = (selector) => document.querySelector(selector);
 const { groupModelsByPrefix, mergeModelsById, modelGroupKey, modelPrefix, pooledUpstreamIds, setUnifiedModelsSelected, unifiedModelSelectionKey } = window.ModelGroups;
+const { normalizeKeyAccess, keyAccessModels } = window.KeyAccess;
 const PANEL_ORDER_KEY = 'local-model-gateway.panel-order.v1';
 const ACTIVE_TAB_KEY = 'local-model-gateway.active-tab.v2';
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
+}
+
+// 上游卡片上的模型列表去重：大小写不同算同一个模型，保留先出现的「当前名称」。
+function uniqueModelLabels(models) {
+  const seen = new Set();
+  const labels = [];
+  for (const id of Array.isArray(models) ? models : []) {
+    const key = String(id || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    labels.push(String(id));
+  }
+  return labels;
 }
 
 function adminHeaders() {
@@ -293,7 +307,50 @@ function balanceDetails(item) {
 }
 
 function thinkingLabel(level) {
-  return { auto: '自动', client: '遵循客户端', off: '关闭', low: '低', medium: '中', high: '高' }[level] || '遵循客户端';
+  return { auto: '自动', client: '遵循客户端', off: '关闭', none: '无（none）', minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '极高' }[level] || level;
+}
+
+const THINKING_GRADES = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+const THINKING_SOURCE_LABELS = { metadata: '上游声明', probe: '主动探测', inferred: '模型名推断', unknown: '能力未知' };
+
+// 同一个模型 ID 可能来自多个站点：思考档位取并集，信息来源取可信度最高的一档。
+function mergedThinkingCapability(model) {
+  const levels = [];
+  let source = 'unknown';
+  for (const provider of model.providers || []) {
+    const info = provider.model || {};
+    const providerSource = info.thinkingSource || 'unknown';
+    for (const level of THINKING_GRADES) {
+      if (Array.isArray(info.thinkingLevels) && info.thinkingLevels.includes(level) && !levels.includes(level)) levels.push(level);
+    }
+    const rank = { probe: 2, metadata: 3, inferred: 1, unknown: 0 };
+    if (rank[providerSource] > rank[source]) source = providerSource;
+  }
+  return { levels, source };
+}
+
+function thinkingMarkup(model, capability) {
+  const origin = `${THINKING_SOURCE_LABELS[capability.source] || '能力未知'}：${capability.levels.length ? capability.levels.map((level) => thinkingLabel(level)).join(' / ') : '未探测到可用档位'}`;
+  const probeTag = capability.source === 'probe' ? '<span class="thinking-probe-tag" title="已通过探测请求确认">探测</span>' : '';
+  if (model.supportsThinking === true) {
+    return `<span class="thinking-badge" title="思考能力来源 — ${escapeHtml(origin)}">支持思考</span>${probeTag}`;
+  }
+  if (model.supportsThinking === null) return '<span class="thinking-badge thinking-unknown" title="上游未声明也无法推断；可点「拉取思考强度」探测">能力未知</span>';
+  return `<span class="thinking-badge thinking-disabled" title="上游不支持思考 — ${escapeHtml(origin)}">不支持思考</span>${probeTag}`;
+}
+
+// 思考强度下拉只列出上游探测到的档位；已保存但上游未探测到的档位仍然保留，
+// 只是加上标注，避免静默改写用户此前的选择。
+function thinkingLevelOptions(levels, selected) {
+  const available = new Set(levels.length ? levels : ['low', 'medium', 'high']);
+  const fixed = [['client', '遵循客户端'], ['auto', '自动'], ['off', '关闭（不发送）']]
+    .map(([value, label]) => `<option value="${value}"${selected === value ? ' selected' : ''}>思考：${label}</option>`)
+    .join('');
+  const graded = THINKING_GRADES
+    .filter((level) => available.has(level) || selected === level)
+    .map((level) => `<option value="${level}"${selected === level ? ' selected' : ''}>思考：${thinkingLabel(level)}${available.has(level) ? '' : '（上游未探测到）'}</option>`)
+    .join('');
+  return fixed + graded;
 }
 
 function catalogSelectionMap() {
@@ -324,11 +381,53 @@ function catalogSelectionMap() {
   return state.modelSelectionDraft;
 }
 
+const MODALITY_LABELS = { text: '文本', image: '图片', audio: '音频', video: '视频', file: '文件' };
+function modalityLabelList(items) {
+  return Array.isArray(items) ? (items.map((item) => MODALITY_LABELS[item] || item).join(' / ') || '无') : '未知';
+}
+
+function modalityMarkup(model) {
+  return (model.providers || []).map((provider) => {
+    const info = provider.model || {};
+    const partial = !Array.isArray(info.inputModalities) ? Object.entries(info.inputModalitySupport || {})
+      .map(([name, supported]) => `${MODALITY_LABELS[name] || name}${supported ? '支持' : '不支持'}`).join('、') : '';
+    return `<div class="model-modalities">${escapeHtml(provider.name)} · 输入：${escapeHtml(modalityLabelList(info.inputModalities))}${partial ? `（${escapeHtml(partial)}）` : ''} · 输出：${escapeHtml(modalityLabelList(info.outputModalities))} · ${info.modalitySource === 'metadata' ? '上游声明' : '未声明'}</div>`;
+  }).join('');
+}
+
+function translatorOptions(selected = '', localModel = '') {
+  const candidates = new Map(keyAccessModels(state.config || {}).map((item) => [item.id, item.id]));
+  for (const item of catalogSelectionMap().values()) candidates.set(item.localModel, item.localModel);
+  if (selected && !candidates.has(selected)) candidates.set(selected, `${selected}（不可用，请重新选择）`);
+  return `<option value="">转译：不启用</option>` + [...candidates].filter(([id]) => id.toLowerCase() !== localModel.toLowerCase())
+    .map(([id, label]) => `<option value="${escapeHtml(id)}"${id === selected ? ' selected' : ''}>转译：${escapeHtml(label)}</option>`).join('');
+}
+
+async function refreshModelCapabilities(button) {
+  syncRenderedModelDraft();
+  const model = allUnifiedModels().find((item) => unifiedModelSelectionKey(item.id) === button.dataset.modelKey);
+  if (!model) return;
+  button.disabled = true;
+  button.textContent = '拉取中…';
+  let failures = 0;
+  try {
+    for (const provider of model.providers.filter((item) => item.enabled)) {
+      const result = await api('/api/admin/model-catalog/capabilities', { method: 'POST', body: JSON.stringify({ upstreamId: provider.id, modelId: provider.model.id, probeThinking: true }) });
+      state.catalog = result.catalog;
+      if (result.syncError || result.probe?.failed || result.probe?.status === 'busy') failures += 1;
+    }
+    reconcileModelSelectionDraft(state.catalog);
+    toast(failures ? `能力刷新完成，${failures} 个来源未能完整刷新，保留已有结论` : '能力已刷新；上游未声明的模态仍显示未知', failures ? 'error' : '');
+  } catch (error) { toast(error.message, 'error'); }
+  finally { renderModelCatalog(); }
+}
+
 function reconcileModelSelectionDraft(catalog, reset = false) {
   if (reset) state.modelSelectionDraft = null;
   const selections = new Map(catalogSelectionMap());
   const models = mergeModelsById(catalog?.upstreams || []);
-  const modelsById = new Map(models.map((model) => [model.id, model]));
+  // 合并与选择都按大小写不敏感的键走：中转站换了拼写也不丢已保存的选择。
+  const modelsById = new Map(models.map((model) => [unifiedModelSelectionKey(model.id), model]));
   const reconciled = new Map();
   for (const [key, selection] of selections) {
     const model = modelsById.get(key);
@@ -380,6 +479,7 @@ function syncRenderedModelDraft() {
       upstreamModel: modelId,
       localModel: row.querySelector('[data-action="model-alias"]')?.value.trim() || modelId,
       thinkingLevel: row.querySelector('[data-action="thinking-level"]')?.value || 'auto',
+      modalityTranslator: row.querySelector('[data-action="modality-translator"]')?.value || '',
       responsesMode: row.querySelector('[data-action="responses-mode"]')?.value || 'auto',
       enabled: true
     });
@@ -409,10 +509,12 @@ function renderModelRow(model, selections) {
   const isAuto = selectedProvider === '__auto__';
   const providerIds = model.providers.map((provider) => provider.id);
   const pooledIds = new Set(isAuto ? pooledUpstreamIds(selection, providerIds) : []);
+  const thinkingCapability = mergedThinkingCapability(model);
+  const thinkingValue = selection?.thinkingLevel || 'auto';
   const poolMarkup = model.providers.length > 1
     ? `<div class="model-pool${isAuto ? '' : ' hidden'}" data-role="model-pool"><span class="model-pool-label">站点优先级：</span>${model.providers.map((provider) => { const priority = Math.max(1, (selection?.upstreamIds || providerIds).indexOf(provider.id) + 1); return `<label class="model-pool-item${provider.enabled ? '' : ' disabled'}"><input type="checkbox" data-action="pool-provider" data-provider-id="${escapeHtml(provider.id)}" ${pooledIds.has(provider.id) ? 'checked' : ''}><span>${escapeHtml(provider.name)}${provider.enabled ? '' : '（已停用）'}</span><input class="priority-input" type="number" min="1" max="99" value="${priority}" data-action="provider-priority" data-provider-id="${escapeHtml(provider.id)}" aria-label="${escapeHtml(provider.name)} 的使用优先级"></label>`; }).join('')}</div>`
     : '';
-  return `<div class="model-row" data-model-key="${escapeHtml(key)}"><input type="checkbox" data-action="toggle-model" data-model-id="${escapeHtml(model.id)}" ${selection ? 'checked' : ''}><div><div class="model-name" title="${escapeHtml(model.id)}">${escapeHtml(model.id)}${model.providers.length > 1 ? `<span class="source-count-badge">${model.providers.length} 个站</span>` : ''}${model.supportsThinking === true ? '<span class="thinking-badge">支持思考</span>' : model.supportsThinking === null ? '<span class="thinking-badge thinking-unknown">能力未知</span>' : '<span class="thinking-badge thinking-disabled">不支持思考</span>'}</div><div class="model-info" title="${escapeHtml(providerNames)}">来源：${escapeHtml(providerNames)}</div></div><div class="model-controls"><select data-action="model-upstream" aria-label="${escapeHtml(model.id)} 的上游站点">${providerOptions}</select><input type="text" data-action="model-alias" value="${escapeHtml(selection?.localModel || model.id)}" placeholder="本地模型别名"><select data-action="thinking-level"><option value="client" ${selection?.thinkingLevel === 'client' ? 'selected' : ''}>思考：遵循客户端</option><option value="auto" ${!selection || selection.thinkingLevel === 'auto' ? 'selected' : ''}>思考：自动</option><option value="off" ${selection?.thinkingLevel === 'off' ? 'selected' : ''}>思考：关闭（不发送）</option><option value="low" ${selection?.thinkingLevel === 'low' ? 'selected' : ''}>思考：低</option><option value="medium" ${selection?.thinkingLevel === 'medium' ? 'selected' : ''}>思考：中</option><option value="high" ${selection?.thinkingLevel === 'high' ? 'selected' : ''}>思考：高</option></select><select data-action="responses-mode" aria-label="${escapeHtml(model.id)} 的接口协议"><option value="auto" ${!selection || selection.responsesMode === 'auto' ? 'selected' : ''}>协议：自动</option><option value="native" ${selection?.responsesMode === 'native' ? 'selected' : ''}>协议：Responses</option><option value="chat" ${selection?.responsesMode === 'chat' ? 'selected' : ''}>协议：Chat</option></select></div>${poolMarkup}</div>`;
+  return `<div class="model-row" data-model-key="${escapeHtml(key)}"><input type="checkbox" data-action="toggle-model" data-model-id="${escapeHtml(model.id)}" ${selection ? 'checked' : ''}><div><div class="model-name" title="${escapeHtml(model.id)}">${escapeHtml(model.id)}${model.providers.length > 1 ? `<span class="source-count-badge">${model.providers.length} 个站</span>` : ''}${thinkingMarkup(model, thinkingCapability)}</div><div class="model-info" title="${escapeHtml(providerNames)}">来源：${escapeHtml(providerNames)}</div>${modalityMarkup(model)}</div><div class="model-controls"><select data-action="model-upstream" aria-label="${escapeHtml(model.id)} 的上游站点">${providerOptions}</select><input type="text" data-action="model-alias" value="${escapeHtml(selection?.localModel || model.id)}" placeholder="本地模型别名"><select data-action="thinking-level">${thinkingLevelOptions(thinkingCapability.levels, thinkingValue)}</select><select data-action="responses-mode" aria-label="${escapeHtml(model.id)} 的接口协议"><option value="auto" ${!selection || selection.responsesMode === 'auto' ? 'selected' : ''}>协议：自动</option><option value="native" ${selection?.responsesMode === 'native' ? 'selected' : ''}>协议：Responses</option><option value="chat" ${selection?.responsesMode === 'chat' ? 'selected' : ''}>协议：Chat</option></select><select data-action="modality-translator" aria-label="${escapeHtml(model.id)} 的模态转译模型">${translatorOptions(selection?.modalityTranslator, selection?.localModel || model.id)}</select><button type="button" class="text-button" data-action="refresh-capabilities" data-model-key="${escapeHtml(key)}" title="刷新各来源的模态声明和思考档位；档位未声明时发送少量付费探测请求">拉取能力</button></div>${poolMarkup}</div>`;
 }
 
 function renderPrefixGroup(prefix, visibleModels, allModels, selections) {
@@ -451,9 +553,9 @@ function render() {
       <button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整上游卡片位置" title="拖动排序">⋮⋮</button>
       <div><div class="item-title">${escapeHtml(item.name)}</div>
         <div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">${item.protocol === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容'}</span><span class="tag">${escapeHtml(clientIdentityLabel(item))}</span><span class="tag ${healthById.get(item.id)?.state === 'open' ? 'off' : 'active'}">${healthLabel(healthById.get(item.id))}</span><span>${escapeHtml(item.baseUrl)}</span></div>
-        <div class="item-meta"><span>Key：${escapeHtml(item.apiKey)}</span><span>模型：${escapeHtml((item.models || []).join(', ') || '未填写（依赖路由）')}</span>${item.modelsSyncedAt ? `<span>同步于：${escapeHtml(formatTime(item.modelsSyncedAt))}</span>` : ''}${healthById.get(item.id)?.consecutiveFailures ? `<span>连续失败：${escapeHtml(healthById.get(item.id).consecutiveFailures)} 次</span>` : ''}${healthById.get(item.id)?.openUntil ? `<span>冷却至：${escapeHtml(formatTime(healthById.get(item.id).openUntil))}</span>` : ''}</div>
+        <div class="item-meta"><span>Key：${escapeHtml(item.apiKey)}</span><span>模型：${escapeHtml(uniqueModelLabels(item.models).join(', ') || '未填写（依赖路由）')}</span>${item.modelsSyncedAt ? `<span>同步于：${escapeHtml(formatTime(item.modelsSyncedAt))}</span>` : ''}${healthById.get(item.id)?.consecutiveFailures ? `<span>连续失败：${escapeHtml(healthById.get(item.id).consecutiveFailures)} 次</span>` : ''}${healthById.get(item.id)?.openUntil ? `<span>冷却至：${escapeHtml(formatTime(healthById.get(item.id).openUntil))}</span>` : ''}</div>
         <div class="item-meta balance-meta">${balanceDetails(balanceById.get(item.id))}</div>
-      </div><div class="item-actions"><button class="text-button" data-action="query-upstream-balance" data-id="${escapeHtml(item.id)}">查询余额</button><button class="text-button" data-action="test-upstream" data-id="${escapeHtml(item.id)}">测试连接</button><button class="text-button" data-action="reset-health" data-id="${escapeHtml(item.id)}">重置状态</button><button class="text-button" data-action="sync-upstream" data-id="${escapeHtml(item.id)}">同步模型</button><button class="text-button" data-action="edit-upstream" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button delete" data-action="delete-upstream" data-id="${escapeHtml(item.id)}">删除</button></div>
+      </div><div class="item-actions"><button class="text-button" data-action="query-upstream-balance" data-id="${escapeHtml(item.id)}">查询余额</button><button class="text-button" data-action="test-upstream" data-id="${escapeHtml(item.id)}">测试连接</button><button class="text-button" data-action="reset-health" data-id="${escapeHtml(item.id)}">重置状态</button><button class="text-button" data-action="sync-upstream" data-id="${escapeHtml(item.id)}">同步模型</button><button class="text-button" data-action="probe-upstream-thinking" data-id="${escapeHtml(item.id)}" title="用极小探测请求确认该站模型支持的思考强度">探测思考</button><button class="text-button" data-action="edit-upstream" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button delete" data-action="delete-upstream" data-id="${escapeHtml(item.id)}">删除</button></div>
     </article>`).join('') : '<div class="empty">还没有上游站点。添加一个 sub2api / newapi 地址后即可开始路由。</div>';
 
   $('#routeList').innerHTML = routes.length ? routes.map((item) => {
@@ -464,7 +566,7 @@ function render() {
     return `<article class="item-card" draggable="true" data-card-id="${escapeHtml(item.id)}"><button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整路由卡片位置" title="拖动排序">⋮⋮</button><div><div class="item-title"><code>${escapeHtml(item.localModel)}</code> <span class="muted">→</span> <code>${escapeHtml(item.upstreamModel)}</code></div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">策略：${strategy}</span>${protocolTag}<span>主上游：${escapeHtml(upstream?.name || '已删除')}</span>${fallbacks ? `<span>备用：${escapeHtml(fallbacks)}</span>` : ''}</div></div><div class="item-actions"><button class="text-button" data-action="edit-route" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button delete" data-action="delete-route" data-id="${escapeHtml(item.id)}">删除</button></div></article>`;
   }).join('') : '<div class="empty">还没有路由。只有一个启用的上游时，未配置路由的模型会自动转发。</div>';
 
-  $('#keyList').innerHTML = localApiKeys.length ? localApiKeys.map((item) => `<article class="item-card" draggable="true" data-card-id="${escapeHtml(item.id)}"><button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整 Key 卡片位置" title="拖动排序">⋮⋮</button><div><div class="item-title">${escapeHtml(item.name)}</div><div class="key-value">${escapeHtml(item.key)}</div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div></div><div class="item-actions"><button class="text-button" data-action="copy-key" data-id="${escapeHtml(item.id)}">复制</button><button class="text-button" data-action="edit-key" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button" data-action="toggle-key" data-id="${escapeHtml(item.id)}">${item.enabled ? '停用' : '启用'}</button><button class="text-button delete" data-action="delete-key" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有本地调用 Key。</div>';
+  $('#keyList').innerHTML = localApiKeys.length ? localApiKeys.map((item) => `<article class="item-card" draggable="true" data-card-id="${escapeHtml(item.id)}"><button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整 Key 卡片位置" title="拖动排序">⋮⋮</button><div><div class="item-title">${escapeHtml(item.name)}</div><div class="key-value">${escapeHtml(item.key)}</div>${keyAccessBadge(item)}<div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div></div><div class="item-actions"><button class="text-button" data-action="copy-key" data-id="${escapeHtml(item.id)}">复制</button><button class="text-button" data-action="edit-key" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button" data-action="toggle-key" data-id="${escapeHtml(item.id)}">${item.enabled ? '停用' : '启用'}</button><button class="text-button delete" data-action="delete-key" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有本地调用 Key。</div>';
 
   const settings = state.config.settings || {};
   $('#upstreamTimeoutMs').value = settings.upstreamTimeoutMs ?? 600000;
@@ -755,6 +857,42 @@ async function syncAllModels() {
   button.textContent = '拉取全部模型';
 }
 
+function thinkingProbeSummary(results) {
+  return results.reduce((totals, item) => ({
+    probed: totals.probed + (item.probed || 0),
+    supported: totals.supported + (item.supported || 0),
+    unsupported: totals.unsupported + (item.unsupported || 0),
+    skipped: totals.skipped + (item.skipped || 0),
+    failed: totals.failed + (item.failed || 0),
+    busy: totals.busy || item.status === 'busy'
+  }), { probed: 0, supported: 0, unsupported: 0, skipped: 0, failed: 0, busy: false });
+}
+
+function applyThinkingProbeResult(result) {
+  if (!result?.catalog) return;
+  state.catalog = result.catalog;
+  reconcileModelSelectionDraft(state.catalog);
+  renderModelCatalog();
+}
+
+async function probeAllThinking() {
+  const button = $('#probeThinkingButton');
+  button.disabled = true;
+  button.textContent = '探测中…';
+  try {
+    const result = await api('/api/admin/model-catalog/thinking-probe', { method: 'POST', body: '{}' });
+    applyThinkingProbeResult(result);
+    const totals = thinkingProbeSummary(result.results || []);
+    const failedHint = totals.failed || totals.busy ? `，失败/跳过 ${totals.failed}${totals.busy ? '（有上游正在探测）' : ''}` : '';
+    toast(`思考强度探测完成：探测 ${totals.probed} 个（支持 ${totals.supported}、不支持 ${totals.unsupported}），跳过 ${totals.skipped}${failedHint}`, totals.failed ? 'error' : '');
+  } catch (error) {
+    toast(`思考强度探测失败：${error.message}`, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = '拉取思考强度';
+  }
+}
+
 async function queryAllBalances() {
   const button = $('#queryAllBalancesButton');
   button.disabled = true;
@@ -822,7 +960,7 @@ function fillUpstreamForm(item = null) {
   updateClientIdentityFields();
   $('#upstreamResponsesMode').value = item?.responsesMode || 'auto';
   $('#upstreamBalanceEndpoint').value = item?.balanceEndpoint || '';
-  $('#upstreamModels').value = (item?.models || []).join('\n');
+  $('#upstreamModels').value = uniqueModelLabels(item?.models).join('\n');
   $('#upstreamModelFetchMessage').textContent = '从上游的 /v1/models 自动获取';
   $('#upstreamModelFetchMessage').className = 'muted';
   $('#upstreamEnabled').checked = item?.enabled !== false;
@@ -836,7 +974,8 @@ function fillRouteForm(item = null) {
   $('#routeUpstreamId').innerHTML = state.config.upstreams.map((upstream) => `<option value="${escapeHtml(upstream.id)}">${escapeHtml(upstream.name)} (${escapeHtml(upstream.protocol)})</option>`).join('');
   $('#routeUpstreamId').value = item?.upstreamId || state.config.upstreams[0]?.id || '';
   $('#routeUpstreamModel').value = item?.upstreamModel || '';
-  $('#routeThinkingLevel').value = item?.thinkingLevel || 'client';
+  $('#routeThinkingLevel').innerHTML = thinkingLevelOptions(THINKING_GRADES, item?.thinkingLevel || 'client');
+  $('#routeModalityTranslator').innerHTML = translatorOptions(item?.modalityTranslator, item?.localModel);
   $('#routeResponsesMode').value = item?.responsesMode || 'auto';
   $('#routeStrategy').value = item?.strategy || 'failover';
   $('#routeFallbackIds').innerHTML = state.config.upstreams.map((upstream) => `<option value="${escapeHtml(upstream.id)}">${escapeHtml(upstream.name)} (${escapeHtml(upstream.protocol)})</option>`).join('');
@@ -846,10 +985,89 @@ function fillRouteForm(item = null) {
   openDialog($('#routeDialog'));
 }
 
+function fillKeyAccessForm(form, item = {}) {
+  const access = normalizeKeyAccess(item);
+  for (const radio of form.querySelectorAll('input[type="radio"]')) radio.checked = radio.value === access.modelAccessMode;
+  const tree = form.querySelector('.key-model-tree');
+  const models = keyAccessModels(state.config);
+  const known = new Set(models.map((model) => unifiedModelSelectionKey(model.id)));
+  // 暂时下架的已保存授权仍可看到/取消，不能因编辑名称而悄悄丢掉。
+  for (const id of access.allowedModels) {
+    if (!known.has(unifiedModelSelectionKey(id))) models.push({ id, group: modelPrefix(id), unavailable: true });
+  }
+  const groups = new Map(access.allowedGroups.map((group) => [group, []]));
+  for (const model of models) {
+    if (!groups.has(model.group)) groups.set(model.group, []);
+    groups.get(model.group).push(model);
+  }
+  const selected = new Set(access.allowedModels.map(unifiedModelSelectionKey));
+  tree.innerHTML = '<p class="help">先启用分组，再勾选模型；只启用分组不会自动授权。全选仅选择当前列表，新同步模型需另外勾选。别名按目标模型分组、独立授权。</p>'
+    + [...groups].sort(([a], [b]) => a.localeCompare(b)).map(([group, items]) => `
+      <section class="key-group">
+        <div class="key-group-header">
+          <label class="check-label"><input type="checkbox" data-key-group="${escapeHtml(group)}" ${access.allowedGroups.includes(group) ? 'checked' : ''}><span class="key-group-title">${escapeHtml(group)}</span></label>
+          <span class="key-group-meta"></span>
+          <button type="button" class="text-button" data-action="key-toggle-group" aria-expanded="true" aria-label="展开或收起 ${escapeHtml(group)}"><span class="key-group-arrow" aria-hidden="true"></span></button>
+        </div>
+        <div class="key-group-body">
+          <div class="item-actions"><button type="button" class="text-button" data-action="key-select-group">组内全选</button><button type="button" class="text-button" data-action="key-clear-group">组内清空</button></div>
+          ${items.map((model) => `<label class="key-model-item"><input type="checkbox" data-key-model="${escapeHtml(model.id)}" ${selected.has(unifiedModelSelectionKey(model.id)) ? 'checked' : ''}><span>${escapeHtml(model.id)}${model.unavailable ? '（当前未发布，仅保留配置）' : model.upstreamModel !== model.id ? ` → ${escapeHtml(model.upstreamModel)}` : ''}</span></label>`).join('') || '<span class="muted">当前没有模型</span>'}
+        </div>
+      </section>`).join('')
+    + (groups.size ? '' : '<div class="empty">暂无可授权模型，请先配置上游或发布本地模型。自定义范围为空时禁止全部模型。</div>');
+  updateKeyAccessForm(form);
+}
+
+function updateKeyAccessForm(form) {
+  const tree = form.querySelector('.key-model-tree');
+  tree.classList.toggle('hidden', form.querySelector('input[type="radio"]:checked').value !== 'custom');
+  for (const group of tree.querySelectorAll('.key-group')) {
+    const enabled = group.querySelector('[data-key-group]').checked;
+    const models = [...group.querySelectorAll('[data-key-model]')];
+    for (const model of models) model.disabled = !enabled;
+    for (const button of group.querySelectorAll('.key-group-body button')) button.disabled = !enabled;
+    group.querySelector('.key-group-meta').textContent = `${enabled ? models.filter((model) => model.checked).length : 0}/${models.length} 可用${enabled ? '' : '（未启用）'}`;
+  }
+}
+
+function keyAccessPayload(form) {
+  // 被禁用的模型复选框（所属分组未启用）仍可能保持勾选状态，
+  // :checked 会照常匹配它们，所以必须显式排除，否则保存的权限与界面不一致。
+  const enabledModels = (selector) => [...form.querySelectorAll(selector)].filter((input) => !input.disabled);
+  return normalizeKeyAccess({
+    modelAccessMode: form.querySelector('input[type="radio"]:checked').value,
+    allowedGroups: [...form.querySelectorAll('[data-key-group]:checked')].map((input) => input.dataset.keyGroup),
+    allowedModels: enabledModels('[data-key-model]:checked').map((input) => input.dataset.keyModel)
+  });
+}
+
+function bindKeyAccessForm(form) {
+  form.addEventListener('change', () => updateKeyAccessForm(form));
+  form.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-action]');
+    if (!button || button.disabled) return;
+    const group = button.closest('.key-group');
+    if (!group) return;
+    if (button.dataset.action === 'key-toggle-group') {
+      const collapsed = group.classList.toggle('collapsed');
+      button.setAttribute('aria-expanded', String(!collapsed));
+    } else if (['key-select-group', 'key-clear-group'].includes(button.dataset.action)) {
+      for (const model of group.querySelectorAll('[data-key-model]')) model.checked = button.dataset.action === 'key-select-group';
+      updateKeyAccessForm(form);
+    }
+  });
+}
+
+function keyAccessBadge(item) {
+  if (!item.modelAccessMode || item.modelAccessMode === 'all') return '<span class="key-perm-badge">全部模型</span>';
+  return `<span class="key-perm-badge restricted">自定义：${escapeHtml((item.allowedGroups || []).join('、') || '无分组')} · ${(item.allowedModels || []).length} 项勾选</span>`;
+}
+
 function fillKeyEditForm(item) {
   $('#editKeyId').value = item.id;
   $('#editKeyName').value = item.name;
   $('#editKeyEnabled').checked = item.enabled !== false;
+  fillKeyAccessForm($('#keyEditForm'), item);
   openDialog($('#keyEditDialog'));
 }
 
@@ -888,7 +1106,7 @@ async function fetchUpstreamModels() {
       method: 'POST',
       body: JSON.stringify({ ...payload, upstreamId: $('#upstreamId').value })
     });
-    $('#upstreamModels').value = result.models.join('\n');
+    $('#upstreamModels').value = uniqueModelLabels(result.models).join('\n');
     message.textContent = `已拉取 ${result.count} 个模型，请点击“保存上游”完成保存`;
     message.className = 'success';
     toast(`已从上游拉取 ${result.count} 个模型`);
@@ -918,7 +1136,7 @@ async function saveRoute(event) {
   event.preventDefault();
   const id = $('#routeId').value;
   const upstreamWeights = Object.fromEntries([...$('#routeWeights').querySelectorAll('input[data-upstream-id]')].map((input) => [input.dataset.upstreamId, Number(input.value)]));
-  const payload = { localModel: $('#localModel').value.trim(), upstreamId: $('#routeUpstreamId').value, upstreamModel: $('#routeUpstreamModel').value.trim(), thinkingLevel: $('#routeThinkingLevel').value, responsesMode: $('#routeResponsesMode').value, strategy: $('#routeStrategy').value, fallbackUpstreamIds: [...$('#routeFallbackIds').selectedOptions].map((option) => option.value), upstreamWeights, enabled: $('#routeEnabled').checked };
+  const payload = { localModel: $('#localModel').value.trim(), upstreamId: $('#routeUpstreamId').value, upstreamModel: $('#routeUpstreamModel').value.trim(), thinkingLevel: $('#routeThinkingLevel').value, modalityTranslator: $('#routeModalityTranslator').value, responsesMode: $('#routeResponsesMode').value, strategy: $('#routeStrategy').value, fallbackUpstreamIds: [...$('#routeFallbackIds').selectedOptions].map((option) => option.value), upstreamWeights, enabled: $('#routeEnabled').checked };
   try {
     await api(id ? `/api/admin/routes/${encodeURIComponent(id)}` : '/api/admin/routes', { method: id ? 'PUT' : 'POST', body: JSON.stringify(payload) });
     closeDialog($('#routeDialog'));
@@ -940,7 +1158,7 @@ async function saveKeyEdit(event) {
   event.preventDefault();
   const id = $('#editKeyId').value;
   try {
-    await api(`/api/admin/local-keys/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ name: $('#editKeyName').value.trim(), enabled: $('#editKeyEnabled').checked }) });
+    await api(`/api/admin/local-keys/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ name: $('#editKeyName').value.trim(), enabled: $('#editKeyEnabled').checked, ...keyAccessPayload($('#keyEditForm')) }) });
     closeDialog($('#keyEditDialog'));
     await loadConfig();
     toast('本地 Key 已更新');
@@ -1021,6 +1239,18 @@ async function handleListClick(event) {
     button.disabled = false;
     button.textContent = '同步模型';
   }
+  if (button.dataset.action === 'probe-upstream-thinking') {
+    button.disabled = true;
+    button.textContent = '探测中…';
+    try {
+      const result = await api(`/api/admin/upstreams/${encodeURIComponent(button.dataset.id)}/thinking-probe`, { method: 'POST', body: '{}' });
+      applyThinkingProbeResult(result);
+      if (result.status === 'busy') toast(`${item?.name || '上游'} 正在探测中`, 'error');
+      else toast(`${item?.name || '上游'} 思考强度探测完成：探测 ${result.probed}（支持 ${result.supported}、不支持 ${result.unsupported}），跳过 ${result.skipped}，失败 ${result.failed}`, result.failed ? 'error' : '');
+    } catch (error) { toast(`${item?.name || '上游'} 思考强度探测失败：${error.message}`, 'error'); }
+    button.disabled = false;
+    button.textContent = '探测思考';
+  }
   if (button.dataset.action === 'delete-upstream') await deleteItem('upstreams', button.dataset.id, '上游');
   if (button.dataset.action === 'delete-route') await deleteItem('routes', button.dataset.id, '路由');
   if (button.dataset.action === 'delete-key') await deleteItem('local-keys', button.dataset.id, '本地 Key');
@@ -1029,7 +1259,7 @@ async function handleListClick(event) {
 async function createKey(event) {
   event.preventDefault();
   try {
-    await api('/api/admin/local-keys', { method: 'POST', body: JSON.stringify({ name: $('#keyName').value.trim() }) });
+    await api('/api/admin/local-keys', { method: 'POST', body: JSON.stringify({ name: $('#keyName').value.trim(), ...keyAccessPayload($('#keyForm')) }) });
     closeDialog($('#keyDialog'));
     $('#keyName').value = '';
     await loadConfig();
@@ -1131,7 +1361,13 @@ $('#addRouteButton').addEventListener('click', () => {
   if (!state.config.upstreams.length) return toast('请先添加至少一个上游站点', 'error');
   fillRouteForm();
 });
-$('#addKeyButton').addEventListener('click', () => openDialog($('#keyDialog')));
+$('#addKeyButton').addEventListener('click', () => {
+  $('#keyForm').reset();
+  fillKeyAccessForm($('#keyForm'));
+  openDialog($('#keyDialog'));
+});
+bindKeyAccessForm($('#keyForm'));
+bindKeyAccessForm($('#keyEditForm'));
 $('#fetchUpstreamModelsButton').addEventListener('click', fetchUpstreamModels);
 $('#queryAllBalancesButton').addEventListener('click', queryAllBalances);
 $('#upstreamClientIdentityPreset').addEventListener('change', updateClientIdentityFields);
@@ -1165,6 +1401,7 @@ $('#usageFileInput').addEventListener('change', async (event) => {
 });
 $('#checkUpdateButton').addEventListener('click', checkForUpdates);
 $('#syncAllModelsButton').addEventListener('click', syncAllModels);
+$('#probeThinkingButton').addEventListener('click', probeAllThinking);
 $('#saveModelSelectionsButton').addEventListener('click', saveModelSelections);
 $('#modelCatalogSearch').addEventListener('input', () => { syncRenderedModelDraft(); renderModelCatalog(); });
 $('#showThinkingModelsOnly').addEventListener('change', () => { syncRenderedModelDraft(); renderModelCatalog(); });
@@ -1176,6 +1413,7 @@ $('#modelCatalogList').addEventListener('click', (event) => {
   if (button.dataset.action === 'toggle-prefix') togglePrefix(button.dataset.prefixKey);
   if (button.dataset.action === 'select-prefix') batchSelectModels(button.dataset.prefix, true);
   if (button.dataset.action === 'clear-prefix') batchSelectModels(button.dataset.prefix, false);
+  if (button.dataset.action === 'refresh-capabilities') refreshModelCapabilities(button);
 });
 $('#modelCatalogList').addEventListener('change', (event) => {
   if (event.target.matches('[data-action="model-upstream"]')) {

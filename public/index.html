@@ -49,7 +49,7 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="backup">配置备份</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.2.0</strong></div>
+        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.3.0</strong></div>
       </aside>
 
       <div class="content">
@@ -79,8 +79,9 @@
           <div><h2>本地模型选择</h2></div>
           <div class="panel-actions"><button id="syncAllModelsButton" class="button secondary">拉取全部模型</button><button id="saveModelSelectionsButton" class="button primary">保存勾选</button></div>
         </div>
-        <p class="help">相同模型 ID 会合并成一项，并按 ID 前缀分组。每个模型可选择“自动选择”全部同名来源站，也可在下拉框中固定某一个站；自动模式会轮询健康站点，并在连接失败、429、5xx 或熔断时切换。可以设置本地别名、默认思考强度和接口协议（自动 / Responses / Chat Completions）。</p>
-        <div class="model-toolbar"><input id="modelCatalogSearch" type="search" placeholder="搜索上游、模型或前缀"><label class="check-label"><input id="showThinkingModelsOnly" type="checkbox"> 只看支持思考的模型</label><button id="expandAllModelsButton" class="text-button">全部展开</button><button id="collapseAllModelsButton" class="text-button">全部收起</button></div>
+        <p class="help">相同模型 ID（忽略大小写）会合并成一项，并按 ID 前缀分组；显示名称沿用「当前名称」，转发时按各中转站自己的拼写发送。每个模型可选择“自动选择”全部同名来源站，也可在下拉框中固定某一个站；自动模式会轮询健康站点，并在连接失败、429、5xx 或熔断时切换。可以设置本地别名、默认思考强度和接口协议（自动 / Responses / Chat Completions）。上游没有给出思考档位时，可点「拉取思考强度」发送极小探测请求确认真实档位，会消耗少量额度。</p>
+        <div class="model-toolbar"><input id="modelCatalogSearch" type="search" placeholder="搜索上游、模型或前缀"><label class="check-label"><input id="showThinkingModelsOnly" type="checkbox"> 只看支持思考的模型</label><button id="probeThinkingButton" type="button" class="text-button" title="对能力未知的模型逐档发送极小探测请求，确认真实支持的思考强度">拉取思考强度</button><button id="expandAllModelsButton" class="text-button">全部展开</button><button id="collapseAllModelsButton" class="text-button">全部收起</button></div>
+        <p class="help">每行「拉取能力」刷新输入/输出模态与思考档位；未声明档位时会发送少量付费探测请求。模态未声明则保持未知，不按模型名推断。每个模型可单独指定转译模型：只将明确不支持的附件转成文字，留空则报错。转译会把附件发送给另一个模型，增加费用与延迟，且可能损失细节；调用 Key 必须同时获准访问两个模型。不支持输出模态转译。</p>
         <div id="modelCatalogList" class="model-catalog-list"></div>
         <div id="modelSelectionMessage" class="form-message"></div>
       </section>
@@ -90,7 +91,7 @@
           <div><h2>本地调用 Key</h2></div>
           <button id="addKeyButton" class="button primary">＋ 新建 Key</button>
         </div>
-        <p class="help">本地 APP 调用时使用这里的 Key。完整 Key 可直接查看和复制；请求头可用 <code>Authorization: Bearer ...</code> 或 <code>x-api-key: ...</code>。</p>
+        <p class="help">本地 APP 调用时使用这里的 Key。新建或编辑时可设置允许的分组，并逐个勾选组内模型；未授权模型不会展示且调用返回 403。旧 Key 默认不限制。完整 Key 可直接查看和复制；请求头可用 <code>Authorization: Bearer ...</code> 或 <code>x-api-key: ...</code>。</p>
         <div id="keyList" class="key-list"></div>
       </section>
 
@@ -204,6 +205,7 @@
       <label>上游模型名<input id="routeUpstreamModel" required placeholder="例如：claude-3-5-sonnet-20241022"></label>
       <label>默认思考强度<select id="routeThinkingLevel"><option value="client">遵循客户端设置</option><option value="auto">自动（跟随上游默认）</option><option value="off">关闭</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
       <label>接口协议 <span class="muted">（覆盖上游设置，决定该模型走 /v1/responses 还是 /v1/chat/completions）</span><select id="routeResponsesMode"><option value="auto">自动（按上游支持情况选择）</option><option value="native">Responses（/v1/responses）</option><option value="chat">Chat Completions（/v1/chat/completions）</option></select></label>
+      <label>模态转译模型<select id="routeModalityTranslator"></select><span class="muted">留空不转译。附件会发送给所选模型并产生额外费用；Key 需要同时拥有两者权限。转译模型必须明确支持该输入模态。</span></label>
       <label>分流策略<select id="routeStrategy"><option value="failover">故障转移（按顺序）</option><option value="round_robin">轮询</option><option value="weighted">加权轮询</option><option value="random">随机</option></select></label>
       <label>备用上游 <span class="muted">（按顺序尝试；429、5xx 或连接失败时切换）</span><select id="routeFallbackIds" multiple size="4"></select></label>
       <div><label>上游权重 <span class="muted">（加权轮询使用；默认 1）</span></label><div id="routeWeights" class="route-weights"></div></div>
@@ -216,7 +218,13 @@
     <form method="dialog" id="keyForm" class="dialog-form">
       <div class="dialog-heading"><div><span class="section-number">LOCAL KEY</span><h2>新建本地 Key</h2></div><button type="button" data-dialog-close="keyDialog" class="icon-button" aria-label="关闭">×</button></div>
       <label>名称<input id="keyName" required placeholder="例如：桌面 APP"></label>
-      <p class="help">留空自动生成。创建后可随时在本地调用 Key 列表中查看和复制。</p>
+      <p class="help">密钥自动生成。创建后可随时在本地调用 Key 列表中查看和复制。</p>
+      <fieldset class="key-access-fieldset">
+        <legend>模型访问范围</legend>
+        <label class="check-label"><input type="radio" name="keyAccessMode" value="all" checked> 允许访问全部模型</label>
+        <label class="check-label"><input type="radio" name="keyAccessMode" value="custom"> 自定义分组与模型</label>
+        <div id="keyModelTree" class="key-model-tree hidden"></div>
+      </fieldset>
       <div class="dialog-actions"><button type="button" data-dialog-close="keyDialog" class="button secondary">取消</button><button value="default" class="button primary">创建 Key</button></div>
     </form>
   </dialog>
@@ -227,6 +235,12 @@
       <input id="editKeyId" type="hidden">
       <label>名称<input id="editKeyName" required></label>
       <label class="check-label"><input id="editKeyEnabled" type="checkbox"> 允许使用这个 Key</label>
+      <fieldset class="key-access-fieldset">
+        <legend>模型访问范围</legend>
+        <label class="check-label"><input type="radio" name="editKeyAccessMode" value="all" checked> 允许访问全部模型</label>
+        <label class="check-label"><input type="radio" name="editKeyAccessMode" value="custom"> 自定义分组与模型</label>
+        <div id="editKeyModelTree" class="key-model-tree hidden"></div>
+      </fieldset>
       <p class="help">完整 Key 显示在本地调用 Key 列表中。如需更换密钥，请新建一个 Key 后删除旧 Key。</p>
       <div class="dialog-actions"><button type="button" data-dialog-close="keyEditDialog" class="button secondary">取消</button><button value="default" class="button primary">保存修改</button></div>
     </form>
@@ -234,6 +248,7 @@
 
   <div id="toast" class="toast" role="status"></div>
   <script src="/model-groups.js"></script>
+  <script src="/key-access.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

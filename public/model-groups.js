@@ -17,8 +17,10 @@
     return JSON.stringify([String(upstreamId || ''), String(prefix || '')]);
   }
 
+  // 合并与选择的统一键：模型名大小写不敏感（gpt-4o / GPT-4O 是同一个模型），
+  // 显示名称另取先出现的「当前名称」，见 mergeModelsById。
   function unifiedModelSelectionKey(modelId) {
-    return String(modelId || '').trim();
+    return String(modelId || '').trim().toLowerCase();
   }
 
   // Round-robin pool for a model: keep the stations that were already picked, drop
@@ -30,14 +32,17 @@
     return kept.length >= 2 ? saved.filter((id) => kept.includes(id)) : providerIds;
   }
 
+  // 相同模型名按大小写不敏感合并成一项：多出来的大小写不同拼写归到「当前名称」那一行，
+  // 来源站则照常全部列出（每个站点各自记录自己的真实拼写，转发时用它）。
   function mergeModelsById(upstreams) {
     const merged = new Map();
     for (const upstream of Array.isArray(upstreams) ? upstreams : []) {
       for (const model of Array.isArray(upstream?.models) ? upstream.models : []) {
         const id = String(model?.id || '').trim();
         if (!id) continue;
-        if (!merged.has(id)) {
-          merged.set(id, {
+        const key = id.toLowerCase();
+        if (!merged.has(key)) {
+          merged.set(key, {
             id,
             name: String(model.name || id),
             ownedBy: String(model.ownedBy || ''),
@@ -45,7 +50,7 @@
             providers: []
           });
         }
-        const item = merged.get(id);
+        const item = merged.get(key);
         if (model.supportsThinking === true) item.supportsThinking = true;
         else if (item.supportsThinking !== true && model.supportsThinking === null) item.supportsThinking = null;
         item.providers.push({

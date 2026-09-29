@@ -62,6 +62,21 @@ assert.equal(shared.providers.length, 2, '同名模型应合并来源站');
 assert.deepEqual(shared.providers.map((provider) => provider.name), ['站点一', '站点二']);
 assert.equal(shared.supportsThinking, true, '任一来源支持思考时合并模型应标记支持');
 
+// 模型名大小写不同算同一个模型：合并成一项，名称用先出现的「当前名称」。
+const caseMerged = mergeModelsById([
+  { id: 'up-1', name: '站点一', protocol: 'openai', models: [{ id: 'gpt-4o' }, { id: 'GPT-4O' }] },
+  { id: 'up-2', name: '站点二', protocol: 'openai', models: [{ id: 'Gpt-4o', supportsThinking: true }] }
+]);
+assert.deepEqual(caseMerged.map((model) => model.id), ['gpt-4o'], '大小写不同应合并为一项');
+assert.equal(caseMerged[0].id, 'gpt-4o', '显示名称沿用先出现的当前名称');
+assert.equal(caseMerged[0].providers.length, 3, '大小写不同的来源站仍要全部列出');
+assert.deepEqual(caseMerged[0].providers.map((provider) => provider.model.id), ['gpt-4o', 'GPT-4O', 'Gpt-4o'], '每个站点保留自己的真实拼写');
+assert.equal(caseMerged[0].supportsThinking, true, '任一拼写支持思考时合并模型应标记支持');
+assert.equal(unifiedModelSelectionKey('GPT-4O'), unifiedModelSelectionKey('gpt-4o'), '选择键按大小写归一');
+const caseSelected = setUnifiedModelsSelected(new Map(), caseMerged, true);
+assert.equal(caseSelected.size, 1, '大小写不同只产生一条选择');
+assert.equal(caseSelected.get('gpt-4o').upstreamModel, 'gpt-4o', '选择沿用当前名称');
+
 const unifiedSelected = setUnifiedModelsSelected(new Map(), merged, true);
 const sharedSelection = unifiedSelected.get(unifiedModelSelectionKey('shared-model'));
 assert.equal(sharedSelection.upstreamMode, 'auto');
@@ -114,5 +129,7 @@ assert.ok(appSource.includes('provider-priority'), '模型应支持调整来源�
 assert.ok(appSource.includes("event.key === 'F5'"), '管理页面应支持 F5 刷新');
 assert.equal(appSource.includes('upstreamIds: providerIds'), false, '保存后不应把轮询池重置为全部站点');
 assert.ok(appSource.includes('pooledUpstreamIds(selection, providerIds)'), '重建草稿时应沿用已保存的轮询池');
+assert.ok(appSource.includes('unifiedModelSelectionKey(model.id), model'), '重建草稿时模型匹配应按大小写归一');
+assert.ok(appSource.includes('function uniqueModelLabels'), '上游卡片模型列表应按大小写去重');
 
 console.log('model group tests passed');

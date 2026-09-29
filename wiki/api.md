@@ -68,6 +68,7 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 | low | `reasoning_effort: low` | `thinking: { type: "enabled", budget_tokens: 2048 }` |
 | medium | `reasoning_effort: medium` | `budget_tokens: 4096` |
 | high | `reasoning_effort: high` | `budget_tokens: 8192` |
+| none / minimal / xhigh | 按声明的原档位发送；`none` 不等于剥离参数 | 预算模式不提供映射，返回 `unsupported_thinking_level`（400） |
 | client | 不主动添加，遵循客户端显式设置 | 不主动添加，遵循客户端显式设置 |
 | auto / off | 不主动添加 | 不主动添加（上游声明不支持思考时也不添加） |
 
@@ -83,11 +84,29 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 
 ### 配置与模型目录
 
+#### 单模型能力刷新与模态转译
+
+`POST /api/admin/model-catalog/capabilities` 请求体：
+
+```json
+{ "upstreamId": "up_example", "modelId": "example-model", "probeThinking": true, "force": false }
+```
+
+刷新该上游 `/v1/models` 的声明；`probeThinking: true` 时只对指定模型补充已有的思考探测（会消耗额度），`force` 可强制重新探测。返回 `{ model, syncError, probe, catalog }`；同步失败保留已有能力，并通过 `syncError` 报告。模态不做主动付费探测。
+
+目录新增 `inputModalities` / `outputModalities`（完整声明数组或 `null`）、`inputModalitySupport`（部分布尔声明）、`inputModalitySource` / `outputModalitySource` / `modalitySource`（`metadata` / `unknown`）。`null` 表示未知，空数组表示声明无对应模态。新声明优先，字段缺失时保留已有声明。每个上游独立记录。
+
+模型选择与路由的创建/更新可传 `modalityTranslator: "本地模型别名"`；`""` 清除，省略保留。仅目标明确不支持的输入才会转成文本；未知或已支持则不转译。转译目标必须存在、启用、明确支持该输入，且调用 Key 对两个模型都获授权。不递归、不自动挑选未配置的模型。文件 ID 不能跨上游使用。
+
+错误码：`unsupported_input_modality`（400，无转译配置）、`unsupported_modality_conversion`（400，协议转换会丢附件）、`unsupported_output_modality`（400，目标不支持输出模态）、`modality_translation_limit`（400，超过 16 个附件）、`modality_translation_failed`（400，配置或能力问题；502，转译失败/空结果/截断/超时）、`model_not_allowed`（403，无转译模型权限）。转译在目标响应开始之前执行，目标 `stream: true` 不改变转译调用的非流式方式。费用、隐私及支持边界见 README「输入模态与转译」。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/admin/config` | 返回脱敏配置（上游 apiKey 掩码，本地 Key 完整） |
 | GET | `/api/admin/model-catalog` | 模型目录（按上游分组 + 对应选择） |
 | POST | `/api/admin/model-catalog/sync` | 拉取全部启用上游的 `/v1/models` |
+| POST | `/api/admin/model-catalog/capabilities` | 刷新模态声明，可选仅探测指定模型的思考档位，见上文 |
+| POST | `/api/admin/model-catalog/thinking-probe` | 拉取思考强度：对元数据未表态的模型发极小探测请求，body 可传 `{ force: true }` 强制重探 |
 | POST | `/api/admin/model-catalog/preview` | 保存前预览某上游的模型列表 |
 | GET | `/api/admin/config/export` | 导出完整配置备份（`exportVersion: 1`） |
 | POST | `/api/admin/config/import` | 导入备份；`preserveCredentials` 控制是否保留现有凭据 |
@@ -101,6 +120,7 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 | DELETE | `/api/admin/upstreams/:id` | 删除上游（同时清理其路由、健康与余额缓存） |
 | POST | `/api/admin/upstreams/:id/test` | 连接测试 |
 | POST | `/api/admin/upstreams/:id/sync-models` | 同步该上游模型列表 |
+| POST | `/api/admin/upstreams/:id/thinking-probe` | 只探测该上游的思考强度档位（返回结果 + 最新模型目录） |
 | POST | `/api/admin/upstreams/:id/balance` | 查询单个上游余额 |
 | POST | `/api/admin/upstreams/:id/reset-health` | 重置熔断/健康状态 |
 
@@ -120,9 +140,30 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/admin/local-keys` | 新建 Key（名称留空自动生成） |
-| PUT | `/api/admin/local-keys/:id` | 编辑名称 / 启用停用 |
+| POST | `/api/admin/local-keys` | 新建 Key（密钥自动生成，可配置模型权限） |
+| PUT | `/api/admin/local-keys/:id` | 编辑名称 / 启用停用 / 分组与模型权限 |
 | DELETE | `/api/admin/local-keys/:id` | 删除（系统至少保留一个 Key，最后一个不允许删除） |
+
+新建和更新均支持：
+
+```json
+{
+  "name": "桌面客户端",
+  "modelAccessMode": "custom",
+  "allowedGroups": ["gpt", "claude"],
+  "allowedModels": ["gpt-4o", "my-claude"]
+}
+```
+
+- `modelAccessMode`：`all`（默认、旧 Key 兼容）或 `custom`。非法模式/权限数组返回 400，更新不生效。
+- `allowedGroups`：允许的目标模型前缀分组，与模型目录分组规则一致；例如 `my-claude → claude-sonnet` 属于 `claude` 组。
+- `allowedModels`：独立授权的本地模型名。模型和分组**必须同时勾选**；授权别名不隐含授权上游原名或其他别名。大小写不敏感，显示保留首个拼写。
+- 自定义 Key 只能访问已发布模型（即不限制 Key 所见的模型列表）。选择器模式开启后，未发布的上游原名不能绕过本地选择。通配路由不会授权任意模型名。
+- 组内全选仅保存当前模型列表，不自动授权未来新同步的模型。自定义权限为空时拒绝全部模型。
+- GET `/v1/models` 按 Key 过滤；Chat / Messages / Responses（包括流式请求）在转发前校验，未授权返回 HTTP 403、`error.code: model_not_allowed`，不请求上游。
+- PUT 未提供权限字段时保留原值，启停/重命名不重置权限；切回 `all` 可保留勾选，下次切回 `custom` 继续使用。
+- 备份保存权限；导入时 `preserveCredentials: true` 保留当前 Key 及权限，`false` 恢复备份 Key 及权限，旧备份缺失权限字段默认 `all`。
+
 
 ### 模型选择器
 
@@ -133,6 +174,8 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 `selection` 字段：`upstreamModel`（上游模型 ID）、`localModel`（本地别名）、
 `upstreamId`（主站）、`upstreamIds`（轮询池子集）、`upstreamMode`（`auto`/`fixed`）、
 `thinkingLevel`、`responsesMode`（`auto`/`native`/`chat`，模型级接口协议，覆盖上游设置）、`enabled`。
+模型 ID **忽略大小写**：重复校验、`modelSelections` 记录和托管路由都以归一后的模型名为键，
+因此 `gpt-4o` 与 `GPT-4O` 视为同一个模型（详见 [模型路由与轮询](routing.md)）。
 详见 [模型路由与轮询](routing.md)。
 
 ### 可靠性设置与状态

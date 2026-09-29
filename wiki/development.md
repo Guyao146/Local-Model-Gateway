@@ -1,5 +1,19 @@
 # 开发与测试
 
+## 模态能力与转译测试
+
+`src/modalities.js` 负责能力元数据归一化、三种协议的附件遍历、转译配置检查与有损转换保护；运行 `node test/modalities.test.js` 验证纯函数。`node test/modalities.integration.test.js` 使用临时数据目录和本地模拟上游，覆盖能力刷新、单模型思考探测、按模型转译、权限、失败、流式、重复附件复用及配置重启/导入；两者均已注册到 `npm test`。不要使用真实上游验证主动探测，以免消耗额度或泄露附件。
+
+可选真实浏览器冒烟测试：安装 Chrome，并使用 Node 22+（内置 WebSocket）运行：
+
+```powershell
+$env:GATEWAY_BROWSER_TEST = '1'
+try { node test/modalities.integration.test.js }
+finally { Remove-Item Env:GATEWAY_BROWSER_TEST }
+```
+
+可通过 `CHROME_PATH` 指定 Chrome 可执行文件路径。测试使用独立临时用户配置，检查模态展示、模型行转译选择保存、单模型能力刷新、路由新增/编辑，以及浏览器脚本异常；不安装额外依赖。
+
 ## 运行测试
 
 无第三方依赖，全部测试是纯 Node 脚本（`node:assert/strict`）。运行全部测试：
@@ -7,7 +21,7 @@
 ```powershell
 cd local-model-gateway
 npm.cmd test
-# 等价于依次执行 test/ 下 10 个脚本
+# 等价于依次执行 package.json 中注册的测试脚本
 ```
 
 测试清单（`package.json` 的 `scripts.test`）：
@@ -17,6 +31,8 @@ npm.cmd test
 | `test/protocol.test.js` | 单元 | OpenAI ↔ Anthropic、Responses 转换、endpoint 拼接 |
 | `test/routing.test.js` | 单元 | 四种分流策略的排序与游标、权重分布 |
 | `test/model-groups.test.js` | 单元 | 模型目录分组、勾选合并、轮询池勾选（`pool-provider`）、日志分页接口存在性 |
+| `test/key-access.test.js` | 单元 | 前后端共用的权限归一化、分组、发布列表、别名独立授权与通配路由 |
+| `test/key-access.integration.test.js` | 集成 | Key 增改/启停、三个协议 403（含 stream）、禁止访问不转发、权限过滤、导入/重启持久化 |
 | `test/balance.test.js` | 单元 | NewAPI/Sub2API 余额解析、余额路径安全校验 |
 | `test/client-identity.test.js` | 单元 | 客户端标识预设、自定义 UA 校验 |
 | `test/admin-auth.test.js` | 单元 | 回环识别、转发头伪造防护、可信代理解析 |
@@ -24,6 +40,7 @@ npm.cmd test
 | `test/gateway.integration.test.js` | 集成 | 转发/备用/熔断/限流/并发/`x-request-id`/余额查询 |
 | `test/stream.integration.test.js` | 集成 | 流式响应转换与 SSE 转发 |
 | `test/model-selection.integration.test.js` | 集成 | 模型选择保存、`upstreamIds` 轮询池、固定站、旧备份合并迁移 |
+| `test/model-case.integration.test.js` | 集成 | 模型名/中转站大小写合并、按各站拼写转发、重复选择拒绝、备份导入合并 |
 
 集成测试模式：
 
@@ -41,6 +58,13 @@ npm.cmd test
   `/api/admin/metrics/logs`；分页/压实/迁移另用独立临时脚本验证过。
 - **`upstreamIds` 落库与路由合成**：`model-selection.integration.test.js` 覆盖
   auto 模式保存、轮询请求在两站间分配、切到 fixed 后单站、旧备份同名选择合并为候选池。
+- **拉取思考强度（后端全链路）**：`thinking.integration.test.js` 用两个假上游覆盖
+  元数据跳过、逐档试探、参数被整体拒绝时提前结束、429 不改写判断、探测不写指标/不进熔断、
+  探测结论挺过重新同步、单站接口 404、非 JSON 请求体容错。
+- **大小写合并（前后端）**：`model-groups.test.js` 断言 `mergeModelsById` 合并大小写不同、
+  键归一化与 `app.js` 的 `uniqueModelLabels`；`model-case.integration.test.js` 用一个
+  自身就返回 `gpt-4o`/`GPT-4O` 的假上游加第二个站点，覆盖同站合并落库、跨站合成一条选择、
+  按各站拼写转发、重复选择被拒、备份导入换大小写仍对得上并合并重复项。
 
 ## 代码约定
 
@@ -65,7 +89,8 @@ npm.cmd test
 4. **模型选择器与手工路由冲突**：同名冲突会在保存时报错，但前端反馈路径可再打磨。
 5. **日志只保留成功/失败的摘要**：不含请求体/响应体，若需排查内容级问题需另加审计日志。
 6. **多用户权限**：Authentik 只做「能进后台即可管理」的粗粒度控制；细分权限待扩展。
-7. **思考能力识别依赖字段名**：私有站点的能力字段可能需要持续适配。
+7. **思考能力识别依赖字段名**：私有站点的能力字段可能需要持续适配；元数据没给档位时可用
+   管理台的「拉取思考强度」主动探测，但探测仍依赖上游错误信息的可读性。
 
 ## 变更记录（本次迭代）
 
@@ -86,3 +111,25 @@ npm.cmd test
   每次尝试的 code），`wiki/metrics.md` 字段说明；测试为新增 `test/metrics.test.js`
   与 `test/errors.test.js`、`gateway.integration.test.js`、`stream.integration.test.js`
   的断言（`npm test` 已纳入 `test/metrics.test.js`）。
+- 拉取思考强度：`src/server.js` 新增 `classifyThinkingProbe` / `thinkingProbePlan` /
+  `probeThinkingLevel` / `probeModelThinking` / `probeUpstreamThinking` /
+  `probeAllUpstreamThinking` 与 `POST /api/admin/model-catalog/thinking-probe`、
+  `POST /api/admin/upstreams/:id/thinking-probe`；`modelCapabilityMetadata` 增加
+  `metadataDeclared` 并把档位优先级改为「上游声明 > 探测 > 三档兜底」，同时摘掉探测写回的
+  `supportsThinking`/`thinkingLevels` 以免被当成上游声明；`normalizeModelCatalog` 透传
+  `thinkingSource`/`thinkingProbedAt`；`safeUpstreamBalanceMessage` 提出公共的
+  `sanitizeUpstreamMessage` 复用脱敏；`public/app.js` 新增 `mergedThinkingCapability` /
+  `thinkingMarkup` / `thinkingLevelOptions` / `probeAllThinking`，`public/index.html`
+  加工具栏按钮与说明，`public/styles.css` 加 `.thinking-probe-tag`；
+  测试为新增 `test/thinking.integration.test.js` 并纳入 `npm test`。
+- 中转站与模型名大小写合并：`src/server.js` 新增 `modelIdKey`/`sameModelId`，
+  `normalizeModelCatalog` 改为按大小写归一键合并（名称沿用当前名称、能力由后来者补齐），
+  `catalogForUpstream` 兜底条目同规则，`mergeModelCatalog`/`syncUpstreamModels` 合并后
+  同步重写 `upstream.models`，`modelEntryFor` 先精确后忽略大小写命中，
+  `makeUpstreamRequest` 按站点真实拼写转发，`chooseRoute`、`publicModelCatalog` 的选择链接、
+  `saveModelSelections` 的重复校验与 `previousByModel`、`modelSelectionKey`、
+  备份导入的 `selectionsByModel` 全部改为大小写归一（重复选择报 400）；
+  前端 `public/model-groups.js` 的 `mergeModelsById`/`unifiedModelSelectionKey`、
+  `public/app.js` 的 `reconcileModelSelectionDraft` 与 `uniqueModelLabels` 同步调整，
+  `public/index.html` 补充说明；测试新增 `test/model-case.integration.test.js`
+  并在 `test/model-groups.test.js` 加单元断言。

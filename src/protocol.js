@@ -130,10 +130,19 @@ function openAIToAnthropic(input, model) {
   if (input.temperature !== undefined) result.temperature = input.temperature;
   if (input.top_p !== undefined) result.top_p = input.top_p;
   if (input.stop !== undefined) result.stop_sequences = Array.isArray(input.stop) ? input.stop : [input.stop];
-  if (input.thinking) result.thinking = input.thinking;
-  if (input.reasoning_effort && !input.thinking) {
+  if (input.user !== undefined) result.metadata = { user_id: String(input.user) };
+  if (input.thinking) {
+    result.thinking = input.thinking;
+  } else if (input.reasoning_effort !== undefined && String(input.reasoning_effort).trim().toLowerCase() !== 'none') {
+    const effort = String(input.reasoning_effort).trim().toLowerCase();
     const budgets = { low: 2048, medium: 4096, high: 8192 };
-    result.thinking = { type: 'enabled', budget_tokens: budgets[input.reasoning_effort] || budgets.medium };
+    result.thinking = { type: 'enabled', budget_tokens: budgets[effort] || budgets.medium };
+  }
+  if (result.thinking?.type === 'enabled' && result.thinking.budget_tokens) {
+    const minMaxTokens = Number(result.thinking.budget_tokens) + 1024;
+    if (Number(result.max_tokens || 0) < minMaxTokens) {
+      result.max_tokens = minMaxTokens;
+    }
   }
   const tools = openAIToolsToAnthropic(input.tools);
   if (tools?.length) result.tools = tools;
@@ -166,14 +175,12 @@ function anthropicToOpenAI(input, model) {
         result.messages.push({
           role: 'tool',
           tool_call_id: block.tool_use_id,
-          content: textFromContent(block.content)
+          content: anthropicInputContentToOpenAI(block.content)
         });
       }
       const normalBlocks = message.content.filter((block) => block.type !== 'tool_result');
       if (normalBlocks.length) {
-        result.messages.push({ role: 'user', content: normalBlocks.map((block) => (
-          block.type === 'text' ? block : block
-        )) });
+        result.messages.push({ role: 'user', content: anthropicInputContentToOpenAI(normalBlocks) });
       }
       continue;
     }
@@ -187,6 +194,7 @@ function anthropicToOpenAI(input, model) {
   if (input.temperature !== undefined) result.temperature = input.temperature;
   if (input.top_p !== undefined) result.top_p = input.top_p;
   if (input.stop_sequences !== undefined) result.stop = input.stop_sequences;
+  if (input.metadata?.user_id) result.user = String(input.metadata.user_id);
   if (input.reasoning_effort !== undefined) result.reasoning_effort = input.reasoning_effort;
   if (input.thinking?.type === 'enabled' && input.thinking.budget_tokens) {
     const budget = Number(input.thinking.budget_tokens);
@@ -202,7 +210,32 @@ function anthropicToOpenAI(input, model) {
       }
     }));
   }
+  if (input.tool_choice) {
+    if (input.tool_choice === 'auto' || input.tool_choice?.type === 'auto') {
+      result.tool_choice = 'auto';
+    } else if (input.tool_choice === 'any' || input.tool_choice?.type === 'any') {
+      result.tool_choice = 'required';
+    } else if (input.tool_choice?.type === 'tool' && input.tool_choice.name) {
+      result.tool_choice = { type: 'function', function: { name: input.tool_choice.name } };
+    } else if (input.tool_choice?.type === 'none') {
+      result.tool_choice = 'none';
+    }
+  }
   return result;
+}
+
+function anthropicInputContentToOpenAI(content) {
+  if (!Array.isArray(content)) return content;
+  return content.map((block) => {
+    if (block.type === 'image' && block.source?.type === 'base64') {
+      return { type: 'image_url', image_url: { url: `data:${block.source.media_type};base64,${block.source.data}` } };
+    }
+    if (block.type === 'image' && block.source?.type === 'url') {
+      return { type: 'image_url', image_url: { url: block.source.url } };
+    }
+    // 未支持的非文本内容不能以错误的 Anthropic 形态直接传给 Chat；转发层会检测丢失并报错。
+    return block.type === 'text' ? block : null;
+  }).filter(Boolean);
 }
 
 function openAIResponseToAnthropic(input, model) {
@@ -373,12 +406,17 @@ function openAIRequestToResponses(input, model) {
   }
   if (input.stop !== undefined) result.stop = input.stop;
   if (input.parallel_tool_calls !== undefined) result.parallel_tool_calls = input.parallel_tool_calls;
+  if (input.presence_penalty !== undefined) result.presence_penalty = input.presence_penalty;
+  if (input.frequency_penalty !== undefined) result.frequency_penalty = input.frequency_penalty;
+  if (input.user !== undefined) result.user = input.user;
+  if (input.seed !== undefined) result.seed = input.seed;
   return result;
 }
 
 const RESPONSES_CHAT_FALLBACK_KEYS = new Set([
   'model', 'instructions', 'input', 'max_output_tokens', 'max_tokens', 'stream',
-  'temperature', 'top_p', 'reasoning_effort', 'thinking', 'tools', 'tool_choice', 'stop'
+  'temperature', 'top_p', 'reasoning_effort', 'reasoning', 'thinking', 'tools', 'tool_choice', 'parallel_tool_calls',
+  'stop', 'presence_penalty', 'frequency_penalty', 'user', 'seed', 'metadata', 'response_format'
 ]);
 const RESPONSES_CHAT_INPUT_TYPES = new Set(['message', 'function_call', 'function_call_output']);
 const RESPONSES_CHAT_CONTENT_TYPES = new Set(['input_text', 'output_text', 'text', 'input_image']);
@@ -388,9 +426,12 @@ function responseRequestRequiresNative(input) {
   if (Object.keys(input).some((key) => !RESPONSES_CHAT_FALLBACK_KEYS.has(key))) return true;
   if (Array.isArray(input.tools) && input.tools.some((tool) => tool && tool.type !== 'function')) return true;
   const hasFunctionTools = Array.isArray(input.tools) && input.tools.some((tool) => tool?.type === 'function');
-  const reasoningEffort = input.reasoning_effort;
+  const reasoningEffort = input.reasoning_effort ?? input.reasoning?.effort;
   if (hasFunctionTools && reasoningEffort !== undefined && String(reasoningEffort).trim().toLowerCase() !== 'none') return true;
-  if (input.tool_choice && typeof input.tool_choice === 'object') return true;
+  if (input.tool_choice && typeof input.tool_choice === 'object') {
+    if (input.tool_choice.type && input.tool_choice.type !== 'function') return true;
+    if (!input.tool_choice.name && !input.tool_choice.function?.name) return true;
+  }
   const items = Array.isArray(input.input) ? input.input : [input.input];
   return items.some((item) => {
     if (item === undefined || item === null || typeof item === 'string') return false;
@@ -453,11 +494,27 @@ function responseInputToOpenAI(input, model) {
   }
   if (input.temperature !== undefined) result.temperature = input.temperature;
   if (input.top_p !== undefined) result.top_p = input.top_p;
-  if (input.reasoning_effort !== undefined) result.reasoning_effort = input.reasoning_effort;
+  if (input.reasoning_effort !== undefined) {
+    result.reasoning_effort = input.reasoning_effort;
+  } else if (input.reasoning?.effort !== undefined) {
+    result.reasoning_effort = input.reasoning.effort;
+  }
   if (input.thinking !== undefined) result.thinking = input.thinking;
   if (input.tools) result.tools = responsesToolsToOpenAI(input.tools);
-  if (input.tool_choice !== undefined) result.tool_choice = input.tool_choice;
+  if (input.tool_choice !== undefined) {
+    if (typeof input.tool_choice === 'object' && input.tool_choice?.name) {
+      result.tool_choice = { type: 'function', function: { name: input.tool_choice.name } };
+    } else {
+      result.tool_choice = input.tool_choice;
+    }
+  }
+  if (input.parallel_tool_calls !== undefined) result.parallel_tool_calls = input.parallel_tool_calls;
   if (input.stop !== undefined) result.stop = input.stop;
+  if (input.presence_penalty !== undefined) result.presence_penalty = input.presence_penalty;
+  if (input.frequency_penalty !== undefined) result.frequency_penalty = input.frequency_penalty;
+  if (input.user !== undefined) result.user = input.user;
+  if (input.seed !== undefined) result.seed = input.seed;
+  if (input.response_format !== undefined) result.response_format = input.response_format;
   return result;
 }
 

@@ -26,6 +26,9 @@ function defaultConfig() {
         name: '默认本地 Key',
         key: makeSecret('sk-local'),
         enabled: true,
+        modelAccessMode: 'all',
+        allowedGroups: [],
+        allowedModels: [],
         createdAt: new Date().toISOString()
       }
     ],
