@@ -88,6 +88,7 @@ Authentik OIDC（`AUTHENTIK_REDIRECT_URI` 必须是公网 HTTPS 地址加
 | `AUTHENTIK_SESSION_TTL_SECONDS` | `28800` | 远程会话最长期（300–604800） |
 | `AUTHENTIK_COOKIE_SECURE` | 按回调 URL 自动 | 生产环境不要强制关闭 |
 | `AUTHENTIK_POST_LOGOUT_REDIRECT_URI` | — | Authentik 登出后的返回地址 |
+| `ADMIN_REMOTE_MODE` | — | 远程管理认证方式：`oidc`（默认）或 `password`；后台切换后以配置文件为准 |
 | `TRUSTED_PROXY_ADDRESSES` | — | 允许提供 `X-Forwarded-For` 的反代精确 IP，逗号分隔 |
 
 Authentik 配置要点（详见 README）：

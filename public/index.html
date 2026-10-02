@@ -26,7 +26,7 @@
 
     <section class="notice">
       <strong>访问保护</strong>
-      <span>本机回环访问自动放行；远程管理访问必须通过 Authentik OIDC 登录。模型调用接口仍使用本地 API Key。</span>
+      <span>本机回环访问自动放行；远程管理访问需要登录，可在「访问控制 → 管理认证」里选择 Authentik OIDC 或本地账号密码。模型调用接口仍使用本地 API Key。</span>
     </section>
 
     <div class="admin-layout">
@@ -39,7 +39,7 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="routes">模型路由</button>
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="models">本地模型选择</button>
           </div>
-          <div class="tab-group"><span class="tab-group-title">访问控制</span><button type="button" class="tab" role="tab" aria-selected="false" data-tab="keys">本地调用 Key</button></div>
+          <div class="tab-group"><span class="tab-group-title">访问控制</span><button type="button" class="tab" role="tab" aria-selected="false" data-tab="keys">本地调用 Key</button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="adminAuth">管理认证</button></div>
           <div class="tab-group"><span class="tab-group-title">监控统计</span>
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="metrics">请求统计</button>
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="logs">请求日志</button>
@@ -49,7 +49,7 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="backup">配置备份</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.3.0</strong></div>
+        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.4.0</strong></div>
       </aside>
 
       <div class="content">
@@ -93,6 +93,25 @@
         </div>
         <p class="help">本地 APP 调用时使用这里的 Key。新建或编辑时可设置允许的分组，并逐个勾选组内模型；未授权模型不会展示且调用返回 403。旧 Key 默认不限制。完整 Key 可直接查看和复制；请求头可用 <code>Authorization: Bearer ...</code> 或 <code>x-api-key: ...</code>。</p>
         <div id="keyList" class="key-list"></div>
+      </section>
+
+          <section class="panel settings-panel dashboard-card" data-panel-id="adminAuth" data-tab-page="adminAuth">
+        <div class="panel-heading">
+          <div><h2>管理认证</h2></div>
+          <button id="saveAdminAuthModeButton" class="button primary">保存认证方式</button>
+        </div>
+        <p class="help">远程访问管理后台时使用下面选择的方式；两种方式可以随时切换。模型调用接口不受影响，仍使用本地 API Key。</p>
+        <fieldset class="key-access-fieldset">
+          <legend>远程管理认证方式</legend>
+          <label class="check-label"><input type="radio" name="adminAuthMode" value="oidc" checked> Authentik OIDC（<span id="adminAuthOidcState">检查中</span>）</label>
+          <label class="check-label"><input type="radio" name="adminAuthMode" value="password"> 本地账号密码（<span id="adminAuthPasswordState">检查中</span>）</label>
+          <label class="check-label"><input type="checkbox" id="adminAuthRequireLocalLogin"> 本机访问也要求登录（仅本地账号模式生效；开启后本机打开后台也要输入账号密码）</label>
+        </fieldset>
+        <div id="adminAuthMessage" class="form-message"></div>
+
+        <div class="subheading-row"><h3>管理员账号</h3><button id="addAdminUserButton" class="button secondary">＋ 新建账号</button></div>
+        <p class="help">密码使用 scrypt 哈希后保存在本地配置中，明文不会回传到前端，也不会写入请求日志。账号在 password 模式下至少保留一个启用状态。</p>
+        <div id="adminUserList" class="key-list"></div>
       </section>
 
           <section class="panel settings-panel dashboard-card" data-panel-id="settings" data-tab-page="settings">
@@ -243,6 +262,18 @@
       </fieldset>
       <p class="help">完整 Key 显示在本地调用 Key 列表中。如需更换密钥，请新建一个 Key 后删除旧 Key。</p>
       <div class="dialog-actions"><button type="button" data-dialog-close="keyEditDialog" class="button secondary">取消</button><button value="default" class="button primary">保存修改</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="adminUserDialog">
+    <form method="dialog" id="adminUserForm" class="dialog-form">
+      <div class="dialog-heading"><div><span class="section-number">ADMIN</span><h2 id="adminUserDialogTitle">新建管理员账号</h2></div><button type="button" data-dialog-close="adminUserDialog" class="icon-button" aria-label="关闭">×</button></div>
+      <input id="adminUserId" type="hidden">
+      <label>用户名<input id="adminUsername" required minlength="3" maxlength="32" pattern="[A-Za-z0-9._@+-]+" placeholder="3 到 32 个字符，可用字母数字以及 . _ @ + -" autocomplete="off"></label>
+      <label>密码<input id="adminPassword" type="password" autocomplete="new-password" placeholder="新建必填；编辑时留空表示不修改密码"></label>
+      <label class="check-label"><input id="adminUserEnabled" type="checkbox" checked> 允许登录</label>
+      <p class="help">密码以 scrypt 哈希存储，保存后无法找回明文，只能重新设置。</p>
+      <div class="dialog-actions"><button type="button" data-dialog-close="adminUserDialog" class="button secondary">取消</button><button value="default" class="button primary">保存</button></div>
     </form>
   </dialog>
 

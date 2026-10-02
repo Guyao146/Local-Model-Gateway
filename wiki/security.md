@@ -6,7 +6,7 @@
 
 | 面 | 接口 | 认证 | 说明 |
 | --- | --- | --- | --- |
-| 管理面 | `/api/admin/*`、后台页面 | 回环免认证 / 远程 Authentik OIDC | 管理凭据与模型调用无关 |
+| 管理面 | `/api/admin/*`、后台页面 | 回环默认免认证（可开启「本机访问也要求登录」）/ 远程 Authentik OIDC 或本地账号密码 | 管理凭据与模型调用无关 |
 | 调用面 | `/v1/*` | 本地 API Key | 无论本机还是远程都要 Key |
 
 默认只监听 `127.0.0.1`，避免未经配置直接暴露到局域网。
@@ -39,6 +39,39 @@
 - 签名校验要求非对称签名 JWT；**不支持加密的 JWE ID Token**（Authentik 不要配 Encryption Key）。
 - `TRANSACTION_TTL_MS = 10min`、`DISCOVERY_TTL_MS = 1h`（discovery 有缓存）。
 - 登出：清会话并调用 Authentik `end_session_endpoint`（带 `id_token_hint`）。
+
+## 本地账号密码认证
+
+当 `adminAuth.remoteMode` 为 `password` 时，远程管理访问改用网关自己验证的账号密码，可与 Authentik 相互切换。
+账号与哈希保存在 `data/config.json` 的 `adminAuth.users`，密码使用 **scrypt（N=16384, r=8, p=1，32 字节输出，16 字节随机盐）**，
+格式 `scrypt$N$r$p$saltHex$hashHex`；管理接口永不返回哈希，配置导出包含哈希但从不包含明文。
+1. 未认证的远程访问先进入登录页 `/auth/login`；`remoteMode` 为 `password` 时显示账号密码表单，否则显示 Authentik 登录按钮。
+2. `POST /auth/password/login` 携带 `{username, password}`；用户名用 `timingSafeEqual` 常量时间比较，密码用 scrypt 重新派生后常量时间比对。
+3. 验证通过后创建与 OIDC 相同的随机 32 字节会话 ID，写入 **HttpOnly** Cookie（`lmg_admin_session`），
+   有效期 `AUTHENTIK_SESSION_TTL_SECONDS`（本地账号同样使用该项配置，默认 28800 秒）。
+4. 会话记录登录时的 `Host`（`originHost`）；后续管理请求必须来自同一 Host，且 `Origin`/`Sec-Fetch-Site` 通过同源检查。
+5. 会话只存在服务端内存，**服务重启后失效**。本地账号登出只清除本机会话，不跳转 Authentik。
+
+## 本机访问也要求登录
+
+默认情况下，来自回环地址（`127.0.0.1` / `::1`）的管理访问**免认证**——这是「本地管理访问：无需认证」的设计，
+方便本机零配置打开后台。但桌面客户端、本机浏览器都走回环，导致本地账号密码在这些场景下永远用不到。
+
+`adminAuth.requireLocalLogin`（管理后台「管理认证」页的「本机访问也要求登录」复选框）开启后：
+
+- 仅当 **远程认证方式为本地账号密码** 且 **存在至少一个启用账号** 时才生效；
+- 生效时回环访问与管理面接口同样要求登录，未登录会跳转到 `/auth/login`；
+- **OIDC 模式或还没有任何账号时保持免认证**，避免把管理员锁死在本机、连创建第一个账号的机会都没有；
+- 开启动作会使当前免认证的页面立即失效，前端会提示并跳转到登录页，用刚配置的账号登录即可。
+
+桌面客户端捆绑的网关会随构建同步更新；开启本机登录前请确认客户端已更新到包含登录页的版本。
+
+防暴力破解：
+
+- 同一来源 5 分钟内连续失败 5 次，锁定该来源 60 秒（`loginFailures` 内存计数），锁定期间即使密码正确也返回 429。
+- 失败响应统一「用户名或密码错误」，不区分用户名是否存在。
+- scrypt 单次校验本身耗时约数十毫秒，进一步拖慢批量猜测。
+
 
 ## 本地 API Key
 

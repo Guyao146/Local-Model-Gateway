@@ -16,10 +16,33 @@ function makeSecret(prefix) {
   return `${prefix}_${crypto.randomBytes(24).toString('base64url')}`;
 }
 
+const ADMIN_REMOTE_MODES = ['oidc', 'password'];
+
+function normalizeAdminAuth(value = {}, env = process.env) {
+  const fromEnv = String(env.ADMIN_REMOTE_MODE || '').trim().toLowerCase();
+  const mode = ADMIN_REMOTE_MODES.includes(fromEnv)
+    ? fromEnv
+    : (ADMIN_REMOTE_MODES.includes(value?.remoteMode) ? value.remoteMode : 'oidc');
+  const users = Array.isArray(value?.users) ? value.users.filter((item) => item && typeof item === 'object') : [];
+  return {
+    remoteMode: mode,
+    requireLocalLogin: value?.requireLocalLogin === true,
+    users: users.map((item) => ({
+      id: typeof item.id === 'string' && item.id.trim() ? item.id.trim() : makeId('admin'),
+      username: String(item.username || '').trim(),
+      passwordHash: typeof item.passwordHash === 'string' ? item.passwordHash : '',
+      enabled: item.enabled !== false,
+      createdAt: item.createdAt || new Date().toISOString(),
+      updatedAt: item.updatedAt || new Date().toISOString()
+    })).filter((item) => item.username && item.passwordHash)
+  };
+}
+
 function defaultConfig() {
   return {
     version: 1,
     adminToken: makeSecret('admin'),
+    adminAuth: normalizeAdminAuth(undefined),
     localApiKeys: [
       {
         id: makeId('key'),
@@ -90,6 +113,7 @@ function loadConfig() {
     const merged = {
       ...defaultConfig(),
       ...parsed,
+      adminAuth: normalizeAdminAuth(parsed.adminAuth),
       localApiKeys: Array.isArray(parsed.localApiKeys) ? parsed.localApiKeys : [],
       upstreams: Array.isArray(parsed.upstreams) ? parsed.upstreams : [],
       routes: Array.isArray(parsed.routes) ? parsed.routes : [],
@@ -127,6 +151,7 @@ function maskSecret(value) {
 function publicConfig(config) {
   return {
     version: config.version,
+    adminAuth: adminAuthSummary(config.adminAuth),
     localApiKeys: config.localApiKeys.map((item) => ({ ...item })),
     upstreams: config.upstreams.map((item) => ({
       ...item,
@@ -139,11 +164,35 @@ function publicConfig(config) {
   };
 }
 
+function adminAuthSummary(value = {}) {
+  const mode = value?.remoteMode === 'password' ? 'password' : 'oidc';
+  return {
+    remoteMode: mode,
+    requireLocalLogin: value?.requireLocalLogin === true,
+    users: Array.isArray(value?.users) ? value.users.map((item) => ({
+      id: String(item.id || ''),
+      username: String(item.username || ''),
+      enabled: item.enabled !== false,
+      createdAt: item.createdAt || null,
+      updatedAt: item.updatedAt || null
+    })) : []
+  };
+}
+
+function maskPasswordHash(hash = '') {
+  if (!hash) return '';
+  return `${hash.slice(0, 10)}••••`;
+}
+
 module.exports = {
   CONFIG_PATH,
+  ADMIN_REMOTE_MODES,
   loadConfig,
   saveConfig,
   publicConfig,
+  normalizeAdminAuth,
+  adminAuthSummary,
+  maskPasswordHash,
   makeId,
   makeSecret,
   maskSecret,

@@ -252,6 +252,11 @@ dialog::backdrop { background: #0009; backdrop-filter: blur(3px); }
 .login-status.error .login-status-icon { border-color: #70453a; background: var(--danger); }
 .login-status.success .login-status-icon { background: #45d9a3; }
 .login-actions { display: grid; gap: 9px; margin-top: 16px; }
+.login-form { display: grid; gap: 12px; margin-top: 22px; }
+.login-field { display: grid; gap: 6px; font-size: 12px; color: #8fa99f; }
+.login-field input { width: 100%; padding: 10px 12px; border: 1px solid #315c4d; border-radius: 9px; background: rgba(11, 20, 16, .8); color: var(--text); font-size: 14px; }
+.login-field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(69, 217, 163, .15); }
+.login-form .login-button { margin-top: 4px; }
 .login-button { display: block; width: 100%; text-align: center; text-decoration: none; }
 .login-error { margin-top: 16px; padding: 12px 14px; border: 1px solid #704538; border-radius: 9px; background: rgba(82, 40, 31, .42); color: #ffad9e; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .login-help { margin-top: 22px; padding-top: 20px; border-top: 1px solid #263a33; color: #70877e; font-size: 10px; line-height: 1.7; text-align: center; }

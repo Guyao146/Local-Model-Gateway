@@ -4,6 +4,7 @@ const state = {
   health: null,
   balances: null,
   catalog: null,
+  adminAuth: null,
   expandedPrefixes: new Set(),
   modelSelectionDraft: null,
   logPage: null,
@@ -787,6 +788,12 @@ async function loadConfig() {
       state.catalog = null;
       state.modelSelectionDraft = null;
     }
+    try {
+      state.adminAuth = await api('/api/admin/admin-auth');
+      renderAdminAuth();
+    } catch {
+      state.adminAuth = null;
+    }
     $('#dashboard').classList.remove('hidden');
     setMessage('');
     render();
@@ -808,6 +815,8 @@ async function initializeAdminAccess() {
     }
     if (status.mode === 'local') {
       $('#adminIdentity').textContent = '本机管理员';
+    } else if (status.mode === 'password') {
+      $('#adminIdentity').textContent = status.user?.username || '本地账号管理员';
     } else {
       const identity = status.user?.username || status.user?.name || status.user?.email || 'Authentik 用户';
       $('#adminIdentity').textContent = identity;
@@ -1314,6 +1323,113 @@ async function saveSettings() {
   }
 }
 
+function renderAdminAuth() {
+  const data = state.adminAuth;
+  if (!data) return;
+  const mode = data.remoteMode === 'password' ? 'password' : 'oidc';
+  const radio = document.querySelector(`input[name="adminAuthMode"][value="${mode}"]`);
+  if (radio) radio.checked = true;
+  const requireCheckbox = $('#adminAuthRequireLocalLogin');
+  requireCheckbox.checked = data.requireLocalLogin === true;
+  requireCheckbox.disabled = mode !== 'password';
+  $('#adminAuthOidcState').textContent = data.oidcConfigured ? '已配置' : '未配置 AUTHENTIK 环境变量';
+  $('#adminAuthPasswordState').textContent = (data.users || []).filter((item) => item.enabled).length > 0 ? `已配置 ${(data.users || []).filter((item) => item.enabled).length} 个启用账号` : '尚无启用账号';
+  const users = data.users || [];
+  $('#adminUserList').innerHTML = users.length ? users.map((item) => `<article class="item-card" data-card-id="${escapeHtml(item.id)}"><div><div class="item-title">${escapeHtml(item.username)}</div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span>${item.createdAt ? `<span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span>` : ''}${item.updatedAt ? `<span>更新于 ${escapeHtml(new Date(item.updatedAt).toLocaleString())}</span>` : ''}</div></div><div class="item-actions"><button class="text-button" data-action="edit-admin-user" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button" data-action="toggle-admin-user" data-id="${escapeHtml(item.id)}">${item.enabled ? '停用' : '启用'}</button><button class="text-button delete" data-action="delete-admin-user" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有管理员账号。远程访问会提示先在本机创建账号。</div>';
+}
+
+async function saveAdminAuthMode() {
+  const mode = document.querySelector('input[name="adminAuthMode"]:checked')?.value || 'oidc';
+  const requireLocalLogin = mode === 'password' && $('#adminAuthRequireLocalLogin').checked;
+  const message = $('#adminAuthMessage');
+  try {
+    state.adminAuth = await api('/api/admin/admin-auth/remote-mode', {
+      method: 'PUT',
+      body: JSON.stringify({ remoteMode: mode, requireLocalLogin })
+    });
+    renderAdminAuth();
+    if (mode === 'password') {
+      message.textContent = requireLocalLogin
+        ? '已切换到本地账号认证，并开启本机登录：当前页面会立即失效，请用刚才配置的账号重新登录。'
+        : '已切换到本地账号认证：远程访问将使用账号密码登录。';
+    } else {
+      message.textContent = '已切换到 Authentik OIDC：远程访问将通过 Authentik 登录。';
+    }
+    message.className = 'form-message success';
+    toast('远程管理认证方式已保存');
+    if (mode === 'password' && requireLocalLogin) {
+      setTimeout(() => window.location.replace('/auth/login?returnTo=/'), 1600);
+    }
+  } catch (error) {
+    message.textContent = error.message;
+    message.className = 'form-message error';
+  }
+}
+
+function fillAdminUserForm(item) {
+  $('#adminUserId').value = item?.id || '';
+  $('#adminUsername').value = item?.username || '';
+  $('#adminPassword').value = '';
+  $('#adminPassword').required = !item;
+  $('#adminUserEnabled').checked = item ? item.enabled !== false : true;
+  $('#adminUserDialogTitle').textContent = item ? '编辑管理员账号' : '新建管理员账号';
+  openDialog($('#adminUserDialog'));
+}
+
+async function saveAdminUser() {
+  const id = $('#adminUserId').value;
+  const username = $('#adminUsername').value.trim();
+  const password = $('#adminPassword').value;
+  const enabled = $('#adminUserEnabled').checked;
+  const payload = { username, enabled };
+  if (password) payload.password = password;
+  try {
+    if (id) {
+      await api(`/api/admin/admin-auth/users/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) });
+      toast('管理员账号已更新');
+    } else {
+      await api('/api/admin/admin-auth/users', { method: 'POST', body: JSON.stringify(payload) });
+      toast('管理员账号已创建');
+    }
+    closeDialog($('#adminUserDialog'));
+    state.adminAuth = await api('/api/admin/admin-auth');
+    renderAdminAuth();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function handleAdminUserClick(event) {
+  const button = event.target.closest('[data-action]');
+  if (!button) return;
+  const action = button.dataset.action;
+  const id = button.dataset.id;
+  const user = (state.adminAuth?.users || []).find((item) => item.id === id);
+  if (!user) return;
+  if (action === 'edit-admin-user') {
+    fillAdminUserForm(user);
+    return;
+  }
+  if (action === 'toggle-admin-user') {
+    try {
+      await api(`/api/admin/admin-auth/users/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ username: user.username, enabled: !user.enabled }) });
+      state.adminAuth = await api('/api/admin/admin-auth');
+      renderAdminAuth();
+      toast(`账号「${user.username}」已${user.enabled ? '停用' : '启用'}`);
+    } catch (error) { toast(error.message, 'error'); }
+    return;
+  }
+  if (action === 'delete-admin-user') {
+    if (!window.confirm(`确定删除账号「${user.username}」吗？`)) return;
+    try {
+      await api(`/api/admin/admin-auth/users/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      state.adminAuth = await api('/api/admin/admin-auth');
+      renderAdminAuth();
+      toast(`账号「${user.username}」已删除`);
+    } catch (error) { toast(error.message, 'error'); }
+  }
+}
+
 async function exportConfig() {
   try {
     const backup = await api('/api/admin/config/export');
@@ -1427,6 +1543,17 @@ $('#modelCatalogList').addEventListener('input', (event) => {
   if (event.target.matches('[data-action="model-alias"]')) syncRenderedModelDraft();
 });
 $('#saveSettingsButton').addEventListener('click', saveSettings);
+$('#saveAdminAuthModeButton').addEventListener('click', saveAdminAuthMode);
+document.querySelectorAll('input[name="adminAuthMode"]').forEach((radio) => {
+  radio.addEventListener('change', () => {
+    const checkbox = $('#adminAuthRequireLocalLogin');
+    checkbox.disabled = radio.value !== 'password' && radio.checked;
+    if (checkbox.disabled) checkbox.checked = false;
+  });
+});
+$('#addAdminUserButton').addEventListener('click', () => fillAdminUserForm());
+$('#adminUserForm').addEventListener('submit', saveAdminUser);
+$('#adminUserList').addEventListener('click', handleAdminUserClick);
 $('#exportConfigButton').addEventListener('click', exportConfig);
 $('#importConfigButton').addEventListener('click', () => $('#configFileInput').click());
 $('#configFileInput').addEventListener('change', (event) => {

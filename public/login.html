@@ -39,6 +39,16 @@
           <button id="retryLoginButton" type="button" class="button secondary login-button">重新检查</button>
         </div>
 
+        <form id="passwordLoginForm" class="login-form hidden" autocomplete="on" novalidate>
+          <label class="login-field">用户名
+            <input id="loginUsername" name="username" type="text" autocomplete="username" required>
+          </label>
+          <label class="login-field">密码
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <button id="passwordLoginButton" type="submit" class="button primary login-button">登录</button>
+        </form>
+
         <div id="loginError" class="login-error hidden" role="alert"></div>
         <p class="login-help">认证服务暂时不可用时，可以留在此页面稍后重试；网关模型调用接口不会受到影响。</p>
       </div>

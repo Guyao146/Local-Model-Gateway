@@ -8,7 +8,7 @@ local-model-gateway/
 │   ├── server.js            # 入口与主逻辑（HTTP 服务、鉴权、路由、转发、管理接口）
 │   ├── config.js            # 配置读写（原子写、密钥掩码、默认值）
 │   ├── metrics.js           # 指标聚合 + JSONL 请求日志 + 分页
-│   ├── admin-auth.js        # 回环识别 + Authentik OIDC 认证
+│   ├── admin-auth.js        # 回环识别 + Authentik OIDC + 本地账号密码认证
 │   ├── protocol.js          # OpenAI / Anthropic / Responses 互转
 │   ├── routing.js           # 分流策略（候选排序）
 │   ├── balance.js           # 上游余额响应解析
@@ -47,11 +47,19 @@ local-model-gateway/
 - 提供 `getMetrics({limit, offset})`、`getLogs({limit, offset})`、`clearMetrics()`。
 - 详见 [指标与请求日志](metrics.md)。
 
-### `src/admin-auth.js`
-- `requestSource`：基于 TCP socket 地址与可信代理列表解析真实来源，默认不信任 `X-Forwarded-For`。
-- `isLoopbackAddress`：`::1` 与 `127.x.x.x`（含 IPv4-mapped IPv6）判为回环。
-- Authentik OIDC：discovery 缓存、Authorization Code + PKCE + state/nonce、JWKS 签名校验、
-  HttpOnly 会话 Cookie（`lmg_admin_session`）。详见 [认证与安全](security.md)。
+### `src/admin-auth.js` 与 `src/admin-users.js`
+
+`admin-users.js` 是纯函数模块：scrypt 密码哈希（`scrypt$N$r$p$salt$hash`）、用户名/密码校验、
+`userFromBody`（新建/编辑账号，编辑时密码留空表示保留旧哈希）。
+
+`admin-auth.js` 负责传输层：
+- 来源识别与回环判定（`requestSource`、`isLoopbackAddress`）。
+- Authentik OIDC：discovery 缓存、Authorization Code + PKCE + state/nonce、JWKS 签名校验、HttpOnly 会话。
+- 本地账号密码：`loginWithPassword` 校验凭据后创建与 OIDC 相同的会话 Cookie；
+  `remoteMode()`/`remoteConfigured()` 决定远程访问的认证方式和错误提示。
+- 来源失败锁定：5 分钟内同一来源失败 5 次锁定 60 秒，返回 429。
+
+两种远程认证共用会话表与同源校验，详见 [认证与安全](security.md)。
 
 ### `src/protocol.js`
 - `openAIToAnthropic` / `anthropicToOpenAI` / `openAIResponseToAnthropic` / `anthropicResponseToOpenAI`。

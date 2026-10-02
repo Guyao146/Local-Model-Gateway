@@ -5,7 +5,7 @@
 | 接口范围 | 鉴权方式 |
 | --- | --- |
 | `/v1/*`（模型调用） | 后台创建的本地 API Key，`Authorization: Bearer <key>` 或 `x-api-key: <key>` |
-| `/api/admin/*`（管理） | 本机回环访问免认证；远程必须通过 Authentik OIDC 登录（会话 Cookie） |
+| `/api/admin/*`（管理） | 本机回环访问免认证；远程必须登录（Authentik OIDC 会话 Cookie 或本地账号密码会话 Cookie） |
 | `/health` | 无鉴权 |
 | `/auth/*` | 无鉴权（登录/登出流程本身） |
 
@@ -136,6 +136,20 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 `strategy`（`failover`/`round_robin`/`weighted`/`random`）、`upstreamWeights`、
 `thinkingLevel`、`enabled`。
 
+### 管理认证
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/admin/admin-auth` | 当前远程认证方式与管理员账号列表（不含密码哈希） |
+| PUT | `/api/admin/admin-auth/remote-mode` | 切换远程认证方式，body 为 `{ remoteMode: "oidc" \| "password" }` |
+| POST | `/api/admin/admin-auth/users` | 新建管理员账号，body 为 `{ username, password }` |
+| PUT | `/api/admin/admin-auth/users/:id` | 编辑账号，body 为 `{ username?, password?, enabled? }`，密码留空不修改 |
+| DELETE | `/api/admin/admin-auth/users/:id` | 删除账号；本地账号模式至少保留一个启用账号 |
+
+- 切换到 `password` 前必须存在启用账号；切换到 `oidc` 前必须完成 Authentik 环境变量配置
+- 用户名 3 到 32 个字符（`A-Za-z0-9._@+-`），密码至少 8 个字符且不含空白
+- 密码以 `scrypt$N$r$p$salt$hash` 格式哈希存储，接口永不返回哈希
+
 ### 本地 Key
 
 | 方法 | 路径 | 说明 |
@@ -205,7 +219,9 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/health` | 健康检查：`{status:'ok', service:'local-model-gateway', time}` |
-| GET | `/auth/status` | 当前管理会话状态：`{authenticated, mode, configured, user}` |
+| GET | `/auth/status` | 当前管理会话状态：`{authenticated, mode, configured, remoteMode, oidcConfigured, passwordConfigured, user}` |
+| GET | `/auth/login` | 登录页；按 `remoteMode` 显示 Authentik 登录或账号密码表单 |
+| POST | `/auth/password/login` | 本地账号密码登录，body 为 `{ username, password }`；成功返回会话 Cookie |
 | GET | `/auth/login` | 网关本地登录页；不依赖 Authentik 在线，支持展示认证连接错误和重试 |
 | GET | `/auth/oidc/login` | 发起 OIDC 登录（重定向 Authentik） |
 | GET | `/auth/oidc/callback` | OIDC 回调（校验 code/state/nonce/PKCE/签名后建会话） |

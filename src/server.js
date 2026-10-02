@@ -10,7 +10,8 @@ const {
   makeId,
   makeSecret,
   maskSecret,
-  normalizeSettings
+  normalizeSettings,
+  normalizeAdminAuth
 } = require('./config');
 const {
   resolveEndpoint,
@@ -36,6 +37,7 @@ const { modalityMetadata, supportsInput, partModality, mapInputParts, inputMedia
 const { recordRequest, getMetrics, getLogs, getAllLogs, importUsageRecords, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
 const { createAdminAuth } = require('./admin-auth');
+const { userFromBody, userSummary } = require('./admin-users');
 const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
 const { clientIdentityHeaders, normalizeClientIdentity } = require('./client-identity');
 const { checkLatestRelease, isTrustedDownloadUrl } = require('./update-checker');
@@ -93,7 +95,7 @@ function logRequestError(requestId, status, body) {
   log('model request error', { requestId, status, response: body });
 }
 
-const adminAuth = createAdminAuth({ log });
+const adminAuth = createAdminAuth({ log, getAdminAuth: () => config.adminAuth });
 
 function safeRecordRequest(entry) {
   try {
@@ -179,6 +181,9 @@ function adminRequestIsSameOrigin(req, access) {
   const hostname = parsedHostname(host);
   if (access.mode === 'local') {
     if (!isLoopbackHostname(hostname)) return false;
+  } else if (access.mode === 'password') {
+    const expectedHost = String(access.session?.originHost || '').toLowerCase();
+    if (!expectedHost || host !== expectedHost) return false;
   } else {
     const publicOrigin = configuredAdminOrigin();
     if (!publicOrigin || host !== new URL(publicOrigin).host.toLowerCase()) return false;
@@ -190,11 +195,13 @@ function adminRequestIsSameOrigin(req, access) {
       if (access.mode === 'local') {
         const originUrl = new URL(origin);
         if (!isLoopbackHostname(originUrl.hostname) || originUrl.host.toLowerCase() !== host) return false;
+      } else if (access.mode === 'password') {
+        if (new URL(origin).host.toLowerCase() !== host) return false;
       } else if (new URL(origin).origin !== configuredAdminOrigin()) return false;
     } catch {
       return false;
     }
-  } else if (access.mode === 'oidc' && !['GET', 'HEAD'].includes(req.method)) {
+  } else if (access.mode !== 'local' && !['GET', 'HEAD'].includes(req.method)) {
     return false;
   }
   return true;
@@ -404,12 +411,17 @@ function requireAdmin(req, res) {
     req.adminAccess = access;
     return true;
   }
-  const message = access.configured ? '远程管理访问需要通过 Authentik 登录' : adminAuth.configurationError();
+  const message = access.configured
+    ? (access.mode === 'password' ? '远程管理访问需要使用本地账号登录' : '远程管理访问需要通过 Authentik 登录')
+    : adminAuth.remoteConfigurationError();
+  const loginUrl = access.configured
+    ? (access.mode === 'password' ? '/auth/login?returnTo=/' : '/auth/oidc/login?returnTo=/')
+    : null;
   sendJson(res, access.configured ? 401 : 503, {
     error: {
       message,
       type: 'authentication_error',
-      loginUrl: access.configured ? '/auth/oidc/login?returnTo=/' : null
+      loginUrl
     }
   });
   return false;
@@ -2523,9 +2535,23 @@ function importConfig(rawConfig, preserveCredentials = true) {
 
   const adminToken = preserveCredentials ? config.adminToken : String(source.adminToken || '').trim();
   if (!adminToken || isMaskedSecret(adminToken)) throw new Error('备份中的管理员 Token 不完整');
+  let importedAdminAuth;
+  if (preserveCredentials) {
+    importedAdminAuth = config.adminAuth;
+  } else {
+    const sourceAdminAuth = source.adminAuth && typeof source.adminAuth === 'object' ? source.adminAuth : {};
+    const users = Array.isArray(sourceAdminAuth.users) ? sourceAdminAuth.users : [];
+    for (const item of users) {
+      if (!item || typeof item !== 'object' || !item.username || !item.passwordHash) {
+        throw new Error('备份中的管理员账号不完整（缺少用户名或密码哈希）');
+      }
+    }
+    importedAdminAuth = normalizeAdminAuth(sourceAdminAuth);
+  }
   const importedSettings = validateImportedSettings(source.settings);
   config.version = Number(source.version) || 1;
   config.adminToken = adminToken;
+  config.adminAuth = importedAdminAuth;
   config.localApiKeys = importedKeys;
   config.upstreams = importedUpstreams;
   config.routes = importedRoutes;
@@ -2868,6 +2894,101 @@ async function handleAdmin(req, res, pathname) {
     sendJson(res, 200, resetUpstreamHealth(id));
     return;
   }
+  if (req.method === 'GET' && pathname === '/api/admin/admin-auth') {
+    sendJson(res, 200, adminAuth.localUsersSummary());
+    return;
+  }
+  if (req.method === 'PUT' && pathname === '/api/admin/admin-auth/remote-mode') {
+    const body = await readBody(req);
+    const mode = String(body?.remoteMode || '').trim().toLowerCase();
+    if (!['oidc', 'password'].includes(mode)) {
+      sendJson(res, 400, { error: { message: '远程管理认证方式只能是 oidc 或 password' } });
+      return;
+    }
+    if (mode === 'password' && !adminAuth.isPasswordConfigured()) {
+      sendJson(res, 400, { error: { message: '切换到本地账号认证前，请先创建至少一个启用的管理员账号' } });
+      return;
+    }
+    if (mode === 'oidc' && !adminAuth.isConfigured()) {
+      sendJson(res, 400, { error: { message: adminAuth.configurationError() || 'Authentik OIDC 尚未配置完成' } });
+      return;
+    }
+    const merged = normalizeAdminAuth(config.adminAuth);
+    merged.remoteMode = mode;
+    if (typeof body?.requireLocalLogin === 'boolean') merged.requireLocalLogin = body.requireLocalLogin;
+    if (merged.requireLocalLogin && merged.remoteMode !== 'password') {
+      sendJson(res, 400, { error: { message: '只有本地账号认证方式下才能开启「本机访问也要求登录」' } });
+      return;
+    }
+    config.adminAuth = merged;
+    saveConfig(config);
+    sendJson(res, 200, adminAuth.localUsersSummary());
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/admin/admin-auth/users') {
+    const body = await readBody(req);
+    let user;
+    try {
+      user = userFromBody(body);
+    } catch (error) {
+      sendJson(res, 400, { error: { message: error.message } });
+      return;
+    }
+    const existing = config.adminAuth.users.find((item) => item.username === user.username);
+    if (existing) {
+      sendJson(res, 409, { error: { message: `用户名「${user.username}」已存在` } });
+      return;
+    }
+    config.adminAuth = { ...normalizeAdminAuth(config.adminAuth), users: [...config.adminAuth.users, user] };
+    saveConfig(config);
+    sendJson(res, 201, { user: userSummary(user) });
+    return;
+  }
+  const adminUserMatch = pathname.match(/^\/api\/admin\/admin-auth\/users\/([^/]+)$/);
+  if (adminUserMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+    const id = decodeURIComponent(adminUserMatch[1]);
+    const index = config.adminAuth.users.findIndex((item) => item.id === id);
+    if (index < 0) {
+      sendJson(res, 404, { error: { message: '管理员账号不存在' } });
+      return;
+    }
+    if (req.method === 'DELETE') {
+      const enabledUsers = config.adminAuth.users.filter((item) => item.id !== id && item.enabled !== false);
+      if (config.adminAuth.remoteMode === 'password' && enabledUsers.length === 0) {
+        sendJson(res, 400, { error: { message: '本地账号认证下至少保留一个启用的管理员账号' } });
+        return;
+      }
+      config.adminAuth = { ...normalizeAdminAuth(config.adminAuth), users: config.adminAuth.users.filter((item) => item.id !== id) };
+      saveConfig(config);
+      sendJson(res, 200, adminAuth.localUsersSummary());
+      return;
+    }
+    const body = await readBody(req);
+    let user;
+    try {
+      user = userFromBody(body, config.adminAuth.users[index]);
+    } catch (error) {
+      sendJson(res, 400, { error: { message: error.message } });
+      return;
+    }
+    const duplicate = config.adminAuth.users.some((item) => item.id !== id && item.username === user.username);
+    if (duplicate) {
+      sendJson(res, 409, { error: { message: `用户名「${user.username}」已存在` } });
+      return;
+    }
+    const enabledUsers = config.adminAuth.users.filter((item) => item.id !== id && item.enabled !== false);
+    if (config.adminAuth.remoteMode === 'password' && user.enabled === false && enabledUsers.length === 0) {
+      sendJson(res, 400, { error: { message: '本地账号认证下至少保留一个启用的管理员账号' } });
+      return;
+    }
+    config.adminAuth = {
+      ...normalizeAdminAuth(config.adminAuth),
+      users: config.adminAuth.users.map((item) => (item.id === id ? user : item))
+    };
+    saveConfig(config);
+    sendJson(res, 200, { user: userSummary(user) });
+    return;
+  }
   if (req.method === 'GET' && pathname === '/api/admin/metrics') {
     const query = new URL(req.url, `http://${req.headers.host || 'localhost'}`).searchParams;
     sendJson(res, 200, getMetrics({ limit: query.get('limit'), offset: query.get('offset') }));
@@ -2920,13 +3041,48 @@ async function requestHandler(req, res) {
   }
   if (pathname === '/auth/status' && req.method === 'GET') {
     const access = adminAuth.authenticate(req);
-    sendJson(res, access.ok ? 200 : (access.configured ? 401 : 503), {
+    const mode = access.ok ? access.mode : adminAuth.remoteMode();
+    const configured = access.ok ? true : adminAuth.remoteConfigured();
+    const error = access.ok ? null : (configured
+      ? (mode === 'password' ? '需要使用本地账号登录' : '需要通过 Authentik 登录')
+      : adminAuth.remoteConfigurationError());
+    sendJson(res, access.ok ? 200 : (configured ? 401 : 503), {
       authenticated: access.ok,
-      mode: access.ok ? access.mode : 'oidc',
-      configured: access.configured !== false,
+      mode,
+      configured,
+      remoteMode: adminAuth.remoteMode(),
+      oidcConfigured: adminAuth.isConfigured(),
+      passwordConfigured: adminAuth.isPasswordConfigured(),
       user: access.user || null,
-      error: access.ok ? null : { message: `${access.configured ? '需要通过 Authentik 登录' : adminAuth.configurationError()}${sourceDiagnosticText(req)}` , source: sourceDiagnostics(req) }
+      error: error ? { message: `${error}${sourceDiagnosticText(req)}`, source: sourceDiagnostics(req) } : null
     }, { 'Cache-Control': 'no-store' });
+    return;
+  }
+  if (pathname === '/auth/password/login' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: { message: error.message } });
+      return;
+    }
+    if (adminAuth.remoteMode() !== 'password') {
+      sendJson(res, 409, { error: { message: '当前远程管理认证方式为 Authentik，不能使用账号密码登录' } });
+      return;
+    }
+    if (!adminAuth.isPasswordConfigured()) {
+      sendJson(res, 503, { error: { message: adminAuth.remoteConfigurationError() } });
+      return;
+    }
+    try {
+      const result = await adminAuth.loginWithPassword(req, body);
+      sendJson(res, 200, { authenticated: true, mode: 'password', user: result.user }, { 'Set-Cookie': result.cookie });
+    } catch (error) {
+      const status = error.statusCode || 401;
+      const headers = {};
+      if (error.retryAfter) headers['Retry-After'] = String(error.retryAfter);
+      sendJson(res, status, { error: { message: error.message } }, headers);
+    }
     return;
   }
   if (pathname === '/auth/login' && req.method === 'GET') {
@@ -3037,7 +3193,7 @@ async function requestHandler(req, res) {
       const access = adminAuth.authenticate(req);
       if (!access.ok) {
         if (!access.configured) {
-          sendRedirect(res, loginPageUrl(`${pathname}${requestUrl.search}`, adminAuth.configurationError()));
+          sendRedirect(res, loginPageUrl(`${pathname}${requestUrl.search}`, adminAuth.remoteConfigurationError()));
           return;
         }
         sendRedirect(res, loginPageUrl(`${pathname}${requestUrl.search}`));
@@ -3066,7 +3222,14 @@ const server = http.createServer((req, res) => {
 server.listen(config.settings.port, config.settings.host, () => {
   log(`Local Model Gateway 已启动：http://${config.settings.host}:${config.settings.port}`);
   log('本地管理访问：无需认证');
-  log(adminAuth.isConfigured() ? '远程管理访问：Authentik OIDC 已启用' : adminAuth.configurationError());
+  if (adminAuth.remoteMode() === 'password') {
+    log(adminAuth.isPasswordConfigured()
+      ? `远程管理访问：本地账号认证已启用（${adminAuth.enabledLocalUsers().length} 个账号）`
+      : adminAuth.remoteConfigurationError());
+    if (adminAuth.requireLocalLogin()) log('本机回环访问管理后台也要求登录');
+  } else {
+    log(adminAuth.isConfigured() ? '远程管理访问：Authentik OIDC 已启用' : adminAuth.configurationError());
+  }
   for (const item of config.localApiKeys) log(`本地 API Key（${item.name}）：${item.key}`);
   if (config.upstreams.length === 0) log('当前还没有配置上游，请打开首页配置。');
 });

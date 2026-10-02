@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const net = require('node:net');
+const { verifyPassword } = require('./admin-users');
 
 const SESSION_COOKIE = 'lmg_admin_session';
 const TRANSACTION_COOKIE = 'lmg_oidc_state';
@@ -130,6 +131,135 @@ class AdminAuth {
     this.transactions = new Map();
     this.discoveryCache = null;
     this.jwksCache = null;
+    this.getAdminAuth = typeof options.getAdminAuth === 'function' ? options.getAdminAuth : () => ({ remoteMode: 'oidc', users: [] });
+    this.loginFailures = new Map();
+  }
+
+  localAuthConfig() {
+    const value = this.getAdminAuth() || {};
+    return {
+      remoteMode: value.remoteMode === 'password' ? 'password' : 'oidc',
+      requireLocalLogin: value.requireLocalLogin === true,
+      users: Array.isArray(value.users) ? value.users.filter((item) => item && item.id && item.username && item.passwordHash) : []
+    };
+  }
+
+  remoteMode() {
+    return this.localAuthConfig().remoteMode;
+  }
+
+  requireLocalLogin() {
+    return this.localAuthConfig().requireLocalLogin === true
+      && this.remoteMode() === 'password'
+      && this.isPasswordConfigured();
+  }
+
+  enabledLocalUsers() {
+    return this.localAuthConfig().users.filter((item) => item.enabled !== false);
+  }
+
+  isPasswordConfigured() {
+    return this.enabledLocalUsers().length > 0;
+  }
+
+  remoteConfigured() {
+    return this.remoteMode() === 'password' ? this.isPasswordConfigured() : this.isConfigured();
+  }
+
+  remoteConfigurationError() {
+    if (this.remoteMode() !== 'password') return this.configurationError();
+    if (!this.isPasswordConfigured()) return '远程管理访问已切换到本地账号认证，但还没有可用的管理员账号；请在本机回环访问后台创建。';
+    return '';
+  }
+
+  failureKey(req) {
+    const source = this.source(req);
+    return normalizeAddress(source.address) || normalizeAddress(source.socketAddress) || 'unknown';
+  }
+
+  checkLoginLockout(req) {
+    const key = this.failureKey(req);
+    const entry = this.loginFailures.get(key);
+    if (!entry || !entry.lockedUntil || entry.lockedUntil <= Date.now()) return null;
+    const seconds = Math.max(1, Math.ceil((entry.lockedUntil - Date.now()) / 1000));
+    const error = new Error(`登录尝试过于频繁，请 ${seconds} 秒后再试`);
+    error.statusCode = 429;
+    error.retryAfter = seconds;
+    return error;
+  }
+
+  recordLoginFailure(req) {
+    const key = this.failureKey(req);
+    const now = Date.now();
+    const windowMs = 5 * 60 * 1000;
+    const entry = this.loginFailures.get(key);
+    if (!entry || now - entry.firstAt > windowMs) {
+      this.loginFailures.set(key, { count: 1, firstAt: now, lockedUntil: 0 });
+      return 1;
+    }
+    entry.count += 1;
+    if (entry.count >= 5 && entry.lockedUntil <= now) entry.lockedUntil = now + 60 * 1000;
+    return entry.count;
+  }
+
+  clearLoginFailures(req) {
+    this.loginFailures.delete(this.failureKey(req));
+  }
+
+  async loginWithPassword(req, credentials = {}) {
+    if (this.remoteMode() !== 'password') {
+      const error = new Error('当前远程管理认证方式为 Authentik，不能使用账号密码登录');
+      error.statusCode = 409;
+      throw error;
+    }
+    const locked = this.checkLoginLockout(req);
+    if (locked) throw locked;
+    const username = String(credentials.username || '');
+    const password = String(credentials.password || '');
+    const candidates = this.enabledLocalUsers();
+    const user = candidates.find((item) => safeEqual(item.username, username)) || null;
+    if (!user || !verifyPassword(password, user.passwordHash)) {
+      this.recordLoginFailure(req);
+      const error = new Error('用户名或密码错误');
+      error.statusCode = 401;
+      throw error;
+    }
+    this.clearLoginFailures(req);
+    const now = Date.now();
+    const sessionId = crypto.randomBytes(32).toString('base64url');
+    const userClaims = {
+      sub: `local:${user.id}`,
+      username: user.username,
+      name: user.username,
+      email: ''
+    };
+    this.sessions.set(sessionId, {
+      user: userClaims,
+      mode: 'password',
+      originHost: String(req.headers.host || '').toLowerCase(),
+      expiresAt: now + this.sessionTtlSeconds * 1000,
+      createdAt: now
+    });
+    this.log('管理员已登录（本地账号）', { username: user.username, source: 'password' });
+    return {
+      user: userClaims,
+      cookie: this.cookie(SESSION_COOKIE, sessionId, this.sessionTtlSeconds)
+    };
+  }
+
+  localUsersSummary() {
+    return {
+      remoteMode: this.remoteMode(),
+      requireLocalLogin: this.localAuthConfig().requireLocalLogin === true,
+      oidcConfigured: this.isConfigured(),
+      users: this.localAuthConfig().users.map((item) => ({
+        id: String(item.id || ''),
+        username: String(item.username || ''),
+        enabled: item.enabled !== false,
+        createdAt: item.createdAt || null,
+        updatedAt: item.updatedAt || null
+      }))
+    };
   }
 
   isConfigured() {
@@ -182,12 +312,12 @@ class AdminAuth {
 
   authenticate(req) {
     const source = this.source(req);
-    if (isLoopbackAddress(source.address)) {
-      return { ok: true, mode: 'local', source, configured: this.isConfigured() };
+    if (isLoopbackAddress(source.address) && !this.requireLocalLogin()) {
+      return { ok: true, mode: 'local', source, configured: this.remoteConfigured() };
     }
     const session = this.sessionForRequest(req);
-    if (session) return { ok: true, mode: 'oidc', source, session, user: session.user, configured: this.isConfigured() };
-    return { ok: false, mode: 'oidc', source, configured: this.isConfigured() };
+    if (session) return { ok: true, mode: session.mode || 'oidc', source, session, user: session.user, configured: this.remoteConfigured() };
+    return { ok: false, mode: this.remoteMode(), source, configured: this.remoteConfigured(), localLoginRequired: this.requireLocalLogin() };
   }
 
   async fetchJson(url, options = {}) {
@@ -378,7 +508,7 @@ class AdminAuth {
       name: String(claims.name || claims.preferred_username || claims.email || ''),
       email: String(claims.email || '')
     };
-    this.sessions.set(sessionId, { user, claims, idToken: tokens.id_token, expiresAt, createdAt: now });
+    this.sessions.set(sessionId, { user, claims, idToken: tokens.id_token, mode: 'oidc', expiresAt, createdAt: now });
     this.log('Authentik 管理员已登录', { username: user.username, source: 'oidc' });
     return {
       returnTo: transaction.returnTo,
@@ -392,8 +522,9 @@ class AdminAuth {
   async logout(req) {
     const session = this.sessionForRequest(req);
     if (session) this.sessions.delete(session.id);
-    let location = '/';
-    if (session && this.isConfigured()) {
+    const sessionMode = session?.mode || (this.remoteMode() === 'password' ? 'password' : 'oidc');
+    let location = sessionMode === 'password' ? '/auth/login' : '/';
+    if (session && sessionMode === 'oidc' && this.isConfigured()) {
       try {
         const discovery = await this.discovery();
         if (discovery.end_session_endpoint) {
