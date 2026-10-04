@@ -425,3 +425,10 @@ Responses 流式请求会返回 `response.created`、`response.output_text.delta
 - 已认证的管理后台会显示完整本地调用 Key；上游 API Key 仍只显示掩码。请避免向不受信任的用户授予外部 OIDC 提供商的管理后台访问权限。
 - 第一版按最常见的 OpenAI Chat Completions 与 Anthropic Messages 协议实现，复杂的供应商私有字段、图片 URL 的特殊格式、部分高级工具参数可能需要后续适配。
 - 当前余额功能是手工按需查询，不提供定时余额监控或告警；请求用量统计也不等同于上游账单。多用户权限可在后续继续扩展。
+
+## 许可证
+
+自当前提交起，Local Model Gateway 采用 [Sakura-License](LICENSE)：源码可用，受覆盖衍生作品须共享并保留署名，特定商业利用需书面授权；它不是 OSI 批准的开源许可证。采用声明与商业授权联系方式见 [LICENSING.md](LICENSING.md)。
+
+- `v2.4.0` 及之前的历史发布版本仍按 `LGPL-2.1` 授权，已合法取得的权利不受影响。
+- `wiki/assets/marked.min.js` 为第三方 MIT 作品，保留其原许可，不属于本许可覆盖范围。

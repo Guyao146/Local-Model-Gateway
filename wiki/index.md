@@ -8,6 +8,7 @@
 - **运行要求**：Node.js ≥ 18
 - **默认监听**：`127.0.0.1:8787`
 - **数据目录**：`data/`（可用环境变量 `LOCAL_MODEL_GATEWAY_DATA_DIR` 覆盖）
+- **许可证**：Sakura-License（正文见仓库根 `LICENSE`，采用声明见 `LICENSING.md`；历史版本为 `LGPL-2.1`）
 
 ---
 
