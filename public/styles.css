@@ -181,6 +181,16 @@ tr:last-child td { border-bottom: 0; }
 .endpoint-grid > div { padding: 15px; border: 1px solid var(--border); border-radius: 8px; }
 .endpoint-grid span { display: block; margin-bottom: 9px; color: var(--muted); font-size: 11px; }
 .endpoint-grid code { display: block; overflow-wrap: anywhere; }
+.about-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+.about-card { padding: 16px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }
+.about-card h3 { margin: 0 0 8px; font-size: 14px; }
+.about-card p { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.about-list { display: grid; gap: 8px; margin: 0; }
+.about-list div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px; align-items: baseline; font-size: 12px; }
+.about-list dt { color: var(--muted); }
+.about-list dd { margin: 0; overflow-wrap: anywhere; }
+.about-list a { color: var(--accent); overflow-wrap: anywhere; }
+.about-list a:hover { text-decoration: none; }
 .update-status { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-top: 18px; font-size: 12px; }
 .update-details { display: grid; gap: 9px; margin-top: 14px; padding: 14px; border: 1px solid #467557; border-radius: 8px; background: rgba(25, 63, 45, .35); font-size: 12px; line-height: 1.55; }
 .update-details p { white-space: pre-wrap; color: var(--muted); }
@@ -406,7 +416,7 @@ dialog { max-height: calc(100dvh - 32px); border-radius: 18px; border-color: #45
   .nav-icon { width: 15px; height: 15px; flex-basis: 15px; }
   .sidebar-title { padding-bottom: 12px; }
   .subheading-row { flex-wrap: wrap; }
-  .endpoint-grid { grid-template-columns: minmax(0, 1fr); }
+  .endpoint-grid, .about-grid { grid-template-columns: minmax(0, 1fr); }
   .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stat-card { padding: 16px 12px; }
   .stat-value { font-size: 25px; overflow-wrap: anywhere; }

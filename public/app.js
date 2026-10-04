@@ -766,6 +766,7 @@ async function loadConfig() {
   try {
     state.config = await api('/api/admin/config');
     $('#currentVersion').textContent = state.config.appVersion || state.config.version || '-';
+    $('#aboutVersion').textContent = state.config.appVersion || state.config.version || '-';
     try {
       state.metrics = await api('/api/admin/metrics');
     } catch {

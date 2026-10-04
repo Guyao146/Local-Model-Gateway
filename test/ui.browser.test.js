@@ -104,6 +104,10 @@ async function main() {
       assert.equal(await evaluate(`[...document.querySelectorAll('.dashboard-card:not(.hidden)')].every(panel => panel.dataset.tabPage === '${tab}')`), true);
       assert.equal(await style('.dashboard-card:not(.hidden)', 'animationName'), 'gateway-reveal');
     }
+    await evaluate('switchTab("about")');
+    await waitFor(settled);
+    assert.equal(await evaluate('/^v?\\d+\\.\\d+\\.\\d+$/.test(document.querySelector("#aboutVersion").textContent)'), true, '关于页应显示当前版本');
+    assert.equal(await evaluate('Boolean(document.querySelector(\'[data-tab-page="about"] a[href*="/blob/main/LICENSE"]\'))'), true, '关于页应提供许可正文入口');
     await evaluate('switchTab("metrics")');
     await waitFor(settled);
     await evaluate('refreshMetrics()');
