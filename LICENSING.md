@@ -8,7 +8,7 @@
 | 权利主体 | Guyao146（仓库全部提交均由其完成，未接收外部贡献） |
 | 适用范围 | 仓库自有内容：`src/`、`public/`、`test/`、`scripts/`、`clients/`、`wiki/`（文档与阅读器）、`README.md`、`LICENSE`、`LICENSING.md`、`package.json` |
 | 排除项 | `wiki/assets/marked.min.js`：第三方 MIT 作品（作者 Christopher Jeffrey），保留原许可，不因一同存放或分发而改用 Sakura-License |
-| 固定版本 | Sakura-License 正文位于仓库根 `LICENSE`；当前文本标识 `Sakura-License-1.2-draft`（审阅修订 3，修订日期 2026-10-02）。v1.2 正式固定版本发布后，应以该固定文本替换 `LICENSE` 并更新本声明 |
+| 固定版本 | Sakura-License v1.2 正式固定版本（文本标识 `Sakura-License-1.2`，发布日期 2026-10-04），正文位于仓库根 `LICENSE` |
 | 生效边界 | 自本采用提交起，对本项目的后续提交与发布版本生效 |
 | 历史权利 | `v2.4.0` 及之前全部发布版本仍按 `LGPL-2.1` 授权；合法接收者使用、修改和再分发的权利不因本次更换而撤销 |
 | 第三方内容 | 网关服务零运行时第三方依赖；文档阅读器使用 marked.min.js（MIT） |
