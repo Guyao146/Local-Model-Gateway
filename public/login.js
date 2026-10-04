@@ -36,7 +36,7 @@ function showOidcLogin() {
   passwordForm.classList.add('hidden');
   loginButton.classList.remove('hidden');
   actionsElement.classList.remove('hidden');
-  setStatus('需要验证管理身份', '请使用 Authentik 登录', 'ready');
+  setStatus('需要验证管理身份', '请使用外部 OIDC 提供商登录', 'ready');
 }
 
 function showPasswordLogin() {

@@ -78,6 +78,10 @@ async function main() {
       return;
     }
     if (req.url === '/v1/chat/completions') {
+      if (!received.at(-1).body.stream) {
+        res.setHeader('Content-Type', 'application/json');
+        return res.end(JSON.stringify({ id: 'chat_test', choices: [{ message: { role: 'assistant', tool_calls: [{ id: 'call_chat', type: 'function', function: { name: 'lookup', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] }));
+      }
       res.setHeader('Content-Type', 'text/event-stream');
       writeSse(res, { id: 'chat_test', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_chat', type: 'function', function: { name: 'lookup', arguments: '{}' } }] }, finish_reason: null }] });
       writeSse(res, { id: 'chat_test', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
@@ -227,7 +231,7 @@ async function main() {
     assert.equal(functionReasoningCalls[0].url, '/v1/responses');
     assert.deepEqual(functionReasoningCalls[0].body.tools, functionReasoningRequest.tools);
     assert.equal(functionReasoningCalls[0].body.reasoning_effort, undefined);
-    assert.deepEqual(functionReasoningCalls[0].body.reasoning, { effort: 'medium' });
+    assert.deepEqual(functionReasoningCalls[0].body.reasoning, { effort: 'none' });
     const nativeRoute = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/routes`, {
       method: 'POST', headers: adminHeaders,
       body: JSON.stringify({ localModel: 'chat-native', upstreamId: added.json.id, upstreamModel: 'native-agent-model', responsesMode: 'native' })
@@ -249,7 +253,7 @@ async function main() {
     const chatFunctionCall = received.at(-1);
     assert.equal(chatFunctionCall.url, '/v1/responses');
     assert.equal(chatFunctionCall.body.reasoning_effort, undefined);
-    assert.deepEqual(chatFunctionCall.body.reasoning, { effort: 'medium' });
+    assert.deepEqual(chatFunctionCall.body.reasoning, { effort: 'none' });
     assert.equal(chatFunctionCall.body.tools[0].name, 'lookup');
     const chatFunctionStream = await request(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
       method: 'POST',
@@ -370,6 +374,10 @@ async function main() {
     assert.equal(prefixed.headers['x-request-id'], 'orphan-prefixed');
     assert.equal(prefixedErrors[0].json.request_id, 'orphan-prefixed');
     assert.equal(prefixedErrors[0].json.error.message, '[TestGateway] [request_id=orphan-prefixed] [code=502] Responses 工具调用缺少名称或关联信息，无法转换为 Chat');
+    // 错误格式夹具独立于接口冷却测试，提升阈值避免连续错误相互干扰。
+    await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
+      method: 'PUT', headers: adminHeaders, body: JSON.stringify({ circuitBreakerFailureThreshold: 20 })
+    });
     // 原生 Responses 的 error / response.failed 均保留原事件结构；转成 Chat 时也不能吞错。
     const nativeErrors = [
       { type: 'error', code: 'invalid_argument', message: '原生流错误', param: 'input', sequence_number: 2 },
@@ -434,7 +442,7 @@ async function main() {
             ? { model: 'chat-native', messages: [{ role: 'user', content: 'error' }] }
             : { model: 'agent-local', input: 'error' })
         });
-        assert.equal(result.status, status);
+        assert.equal(result.status, status === 200 ? 502 : status);
         assert.equal(result.headers['x-request-id'], requestId);
         assert.equal(result.json.request_id, requestId);
         assert.equal(result.json.error.code, 'json_failure');
@@ -485,28 +493,24 @@ async function main() {
     assert.equal(reasoningObjectCall.body.reasoning_effort, 'low');
     assert.equal(reasoningObjectCall.body.reasoning, undefined);
     rejectNativeResponses = true;
-    const callsAfterReject = received.length;
+    // Responses 已强制 none，function tools 可以安全回退到 Chat。
     const callsBeforeUnsupportedFunctionReasoning = received.length;
     const unsupportedFunctionReasoning = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: localHeaders, body: JSON.stringify(functionReasoningRequest)
     });
-    assert.equal(unsupportedFunctionReasoning.status, 400, JSON.stringify(unsupportedFunctionReasoning.json));
-    assert.equal(unsupportedFunctionReasoning.json.error.type, 'unsupported_agent_capability');
-    assert.match(unsupportedFunctionReasoning.json.error.message, /function tools 与 reasoning_effort/);
-    assert.ok(unsupportedFunctionReasoning.json.error.message.startsWith(`[request_id=${unsupportedFunctionReasoning.headers['x-request-id']}] [code=400] `));
-    assert.equal(unsupportedFunctionReasoning.json.request_id, unsupportedFunctionReasoning.headers['x-request-id']);
+    assert.equal(unsupportedFunctionReasoning.status, 200, JSON.stringify(unsupportedFunctionReasoning.json));
+    assert.equal(unsupportedFunctionReasoning.json.output[0].type, 'function_call');
     const unsupportedFunctionReasoningCalls = received.slice(callsBeforeUnsupportedFunctionReasoning);
-    assert.equal(unsupportedFunctionReasoningCalls.length, 1);
+    assert.equal(unsupportedFunctionReasoningCalls.length, 2);
     assert.equal(unsupportedFunctionReasoningCalls[0].url, '/v1/responses');
+    assert.equal(unsupportedFunctionReasoningCalls[1].body.reasoning_effort, 'none');
+    const nativeOnlyCallsBefore = received.length;
     const unsupported = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: 'POST', headers: localHeaders, body: JSON.stringify(agentRequest)
     });
-    assert.equal(unsupported.status, 400, JSON.stringify(unsupported.json));
-    assert.equal(unsupported.json.error.type, 'unsupported_agent_capability');
-    assert.match(unsupported.json.error.message, /不支持此请求所需的 Responses API 原生能力/);
-    assert.ok(unsupported.json.error.message.startsWith(`[request_id=${unsupported.headers['x-request-id']}] [code=400] `));
-    assert.equal(unsupported.json.request_id, unsupported.headers['x-request-id']);
-    assert.equal(received.slice(callsAfterReject).some((item) => item.url === '/v1/chat/completions'), false);
+    assert.equal(unsupported.status, 503, JSON.stringify(unsupported.json));
+    assert.equal(unsupported.json.error.code, 'endpoint_cooling_down');
+    assert.equal(received.slice(nativeOnlyCallsBefore).length, 0, '原生能力不能降级，冷却期间也不能重新请求');
     console.log('native responses integration tests passed');
   } catch (error) {
     throw new Error(`${error.message}\n${stderr}`);

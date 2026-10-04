@@ -193,6 +193,10 @@ async function main() {
     assert.equal(normal.body, normalRaw);
 
     const rawMessage = '上游流错误：请稍后重试';
+    // 此套件只验证错误编码；冷却/熔断另有专用测试，避免连续错误摘除夹具上游。
+    await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
+      method: 'PUT', headers: adminHeaders, body: JSON.stringify({ circuitBreakerFailureThreshold: 20 })
+    });
     for (const prefix of ['[TestGateway]', '']) {
       await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
         method: 'PUT', headers: adminHeaders, body: JSON.stringify({ errorPrefix: prefix })

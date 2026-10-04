@@ -82,7 +82,8 @@ assert.equal(chatNativeRequest.model, 'gpt-native');
 assert.equal(chatNativeRequest.input[0].role, 'system');
 assert.equal(chatNativeRequest.input[1].role, 'user');
 assert.equal(chatNativeRequest.tools[0].name, 'lookup');
-assert.equal(chatNativeRequest.reasoning_effort, 'medium');
+assert.deepEqual(chatNativeRequest.reasoning, { effort: 'none' });
+assert.equal(chatNativeRequest.reasoning_effort, undefined);
 const chatNativeResponse = responsesResponseToOpenAI({
   id: 'resp_native',
   status: 'completed',
@@ -95,8 +96,8 @@ assert.equal(chatRequestRequiresNative({ messages: [{ role: 'user', content: 'he
 assert.equal(chatRequestRequiresNative({ messages: [{ role: 'user', content: 'hello' }], tools: [{ type: 'function', function: { name: 'lookup' } }], reasoning_effort: 'none' }), false);
 assert.equal(responseRequestRequiresNative({ model: 'plain', input: 'hello', max_output_tokens: 20 }), false);
 assert.equal(responseRequestRequiresNative({ model: 'tools', input: 'hello', tools: [{ type: 'function', name: 'lookup' }], reasoning_effort: 'none' }), false);
-assert.equal(responseRequestRequiresNative({ model: 'tools', input: 'hello', tools: [{ type: 'function', name: 'lookup' }], reasoning_effort: 'low' }), true);
-assert.equal(responseRequestRequiresNative({ model: 'tools', input: 'hello', tools: [{ type: 'function', name: 'lookup' }], reasoning_effort: 'HIGH' }), true);
+assert.equal(responseRequestRequiresNative({ model: 'tools', input: 'hello', tools: [{ type: 'function', name: 'lookup' }], reasoning_effort: 'low' }), false);
+assert.equal(responseRequestRequiresNative({ model: 'tools', input: 'hello', tools: [{ type: 'function', name: 'lookup' }], reasoning_effort: 'HIGH' }), false);
 assert.equal(responseRequestRequiresNative({ model: 'agent', input: 'use the computer', tools: [{ type: 'computer' }] }), true);
 assert.equal(responseRequestRequiresNative({ model: 'agent', previous_response_id: 'resp_previous', input: 'continue' }), true);
 assert.equal(responseRequestRequiresNative({ model: 'agent', input: [{ type: 'computer_call_output', call_id: 'call_1', output: { type: 'computer_screenshot', image_url: 'data:image/png;base64,AA==' } }] }), true);
@@ -173,7 +174,7 @@ const nullToolIdResult = openAIResponseToResponses({
   usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 }
 }, 'responses-local');
 assert.equal(typeof nullToolIdResult.id, 'string');
-const nullToolCall = nullToolIdResult.output[0].content.find((part) => part.type === 'function_call');
+const nullToolCall = nullToolIdResult.output.find((part) => part.type === 'function_call');
 assert.equal(typeof nullToolCall.id, 'string');
 assert.equal(typeof nullToolCall.call_id, 'string');
 assert.equal(nullToolCall.id, nullToolCall.call_id);
@@ -189,4 +190,22 @@ assert.equal(typeof fallbackChatResult.id, 'string');
 assert.equal(typeof fallbackChatResult.choices[0].message.tool_calls[0].id, 'string');
 assert.equal(fallbackChatResult.choices[0].message.tool_calls[0].id, '88');
 
+const format = { type: 'json_schema', json_schema: { name: 'answer', strict: true, schema: { type: 'object', properties: { x: { type: 'number' } } } } };
+const formatted = openAIRequestToResponses({ messages: [], max_completion_tokens: 123, response_format: format }, 'm');
+assert.equal(formatted.max_output_tokens, 123);
+assert.deepEqual(formatted.text.format, { type: 'json_schema', ...format.json_schema });
+assert.deepEqual(responseInputToOpenAI({ input: 'hi', text: formatted.text }, 'm').response_format, format);
+assert.equal(responseRequestRequiresNative({ input: 'hi', text: formatted.text }), false);
+assert.equal(normalizeResponsesIds({ previous_response_id: null }).previous_response_id, null);
+const parallel = responseInputToOpenAI({ input: [
+  { type: 'function_call', call_id: 'one', name: 'first', arguments: '{}' },
+  { type: 'function_call', call_id: 'two', name: 'second', arguments: '{}' },
+  { type: 'function_call_output', call_id: 'one', output: '1' },
+  { type: 'function_call_output', call_id: 'two', output: '2' }
+] }, 'm');
+assert.equal(parallel.messages[0].tool_calls.length, 2);
+const parallelMessages = openAIToAnthropic(parallel, 'm');
+assert.equal(parallelMessages.messages.length, 2);
+assert.deepEqual(parallelMessages.messages[1].content.map((item) => item.tool_use_id), ['one', 'two']);
+assert.equal(openAIResponseToResponses({ choices: [{ message: { content: 'partial' }, finish_reason: 'length' }] }, 'm').status, 'incomplete');
 console.log('protocol tests passed');

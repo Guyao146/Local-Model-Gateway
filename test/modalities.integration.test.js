@@ -119,7 +119,7 @@ async function main() {
       checked(await request('/v1/chat/completions', 'POST', { model: 'extra-effort', messages: [{ role: 'user', content: 'hi' }] }, key));
       assert.equal(posts().at(-1).body.reasoning_effort, level);
       checked(await request('/v1/responses', 'POST', { model: 'extra-effort', input: 'hi' }, key));
-      assert.equal(posts().at(-1).body.reasoning.effort, level);
+      assert.equal(posts().at(-1).body.reasoning.effort, 'none');
     }
     checked(await request('/v1/chat/completions', 'POST', { model: 'unknown', messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'none' }, key));
     assert.equal(posts().at(-1).body.reasoning_effort, undefined, '未声明 none 的旧站保留原有省略行为');

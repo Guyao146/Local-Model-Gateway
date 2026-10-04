@@ -818,7 +818,7 @@ async function initializeAdminAccess() {
     } else if (status.mode === 'password') {
       $('#adminIdentity').textContent = status.user?.username || '本地账号管理员';
     } else {
-      const identity = status.user?.username || status.user?.name || status.user?.email || 'Authentik 用户';
+      const identity = status.user?.username || status.user?.name || status.user?.email || 'OIDC 用户';
       $('#adminIdentity').textContent = identity;
     }
     await loadConfig();
@@ -1353,7 +1353,7 @@ async function saveAdminAuthMode() {
         ? '已切换到本地账号认证，并开启本机登录：当前页面会立即失效，请用刚才配置的账号重新登录。'
         : '已切换到本地账号认证：远程访问将使用账号密码登录。';
     } else {
-      message.textContent = '已切换到 Authentik OIDC：远程访问将通过 Authentik 登录。';
+      message.textContent = '已切换到外部 OIDC 提供商：远程访问将通过统一登录进入。';
     }
     message.className = 'form-message success';
     toast('远程管理认证方式已保存');

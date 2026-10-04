@@ -120,9 +120,15 @@ function openAIToAnthropic(input, model) {
     });
   }
 
+  const messagesWithResults = [];
+  for (const message of converted) {
+    const previous = messagesWithResults.at(-1);
+    if (previous?.role === 'user' && message.role === 'user') previous.content.push(...message.content);
+    else messagesWithResults.push(message);
+  }
   const result = {
     model,
-    messages: converted,
+    messages: messagesWithResults,
     max_tokens: input.max_tokens ?? input.max_completion_tokens ?? 4096,
     stream: Boolean(input.stream)
   };
@@ -358,7 +364,7 @@ function openAIRequestToResponses(input, model) {
   const result = {
     model,
     input: [],
-    max_output_tokens: input.max_output_tokens ?? input.max_tokens ?? 4096,
+    max_output_tokens: input.max_output_tokens ?? input.max_completion_tokens ?? input.max_tokens ?? 4096,
     stream: Boolean(input.stream)
   };
   for (const message of Array.isArray(input.messages) ? input.messages : []) {
@@ -395,7 +401,12 @@ function openAIRequestToResponses(input, model) {
   }
   if (input.temperature !== undefined) result.temperature = input.temperature;
   if (input.top_p !== undefined) result.top_p = input.top_p;
-  if (input.reasoning_effort !== undefined) result.reasoning_effort = input.reasoning_effort;
+  result.reasoning = { effort: 'none' };
+  if (input.response_format?.type === 'json_schema') {
+    result.text = { format: { type: 'json_schema', ...input.response_format.json_schema } };
+  } else if (input.response_format) {
+    result.text = { format: input.response_format };
+  }
   if (input.tools) result.tools = openAIToolsToResponses(input.tools);
   if (input.tool_choice !== undefined) {
     if (typeof input.tool_choice === 'object' && input.tool_choice?.function?.name) {
@@ -404,19 +415,15 @@ function openAIRequestToResponses(input, model) {
       result.tool_choice = input.tool_choice;
     }
   }
-  if (input.stop !== undefined) result.stop = input.stop;
   if (input.parallel_tool_calls !== undefined) result.parallel_tool_calls = input.parallel_tool_calls;
-  if (input.presence_penalty !== undefined) result.presence_penalty = input.presence_penalty;
-  if (input.frequency_penalty !== undefined) result.frequency_penalty = input.frequency_penalty;
   if (input.user !== undefined) result.user = input.user;
-  if (input.seed !== undefined) result.seed = input.seed;
   return result;
 }
 
 const RESPONSES_CHAT_FALLBACK_KEYS = new Set([
   'model', 'instructions', 'input', 'max_output_tokens', 'max_tokens', 'stream',
   'temperature', 'top_p', 'reasoning_effort', 'reasoning', 'thinking', 'tools', 'tool_choice', 'parallel_tool_calls',
-  'stop', 'presence_penalty', 'frequency_penalty', 'user', 'seed', 'metadata', 'response_format'
+  'stop', 'presence_penalty', 'frequency_penalty', 'user', 'seed', 'metadata', 'response_format', 'text'
 ]);
 const RESPONSES_CHAT_INPUT_TYPES = new Set(['message', 'function_call', 'function_call_output']);
 const RESPONSES_CHAT_CONTENT_TYPES = new Set(['input_text', 'output_text', 'text', 'input_image']);
@@ -424,10 +431,10 @@ const RESPONSES_CHAT_CONTENT_TYPES = new Set(['input_text', 'output_text', 'text
 function responseRequestRequiresNative(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return true;
   if (Object.keys(input).some((key) => !RESPONSES_CHAT_FALLBACK_KEYS.has(key))) return true;
+  if (input.text && (Object.keys(input.text).some((key) => key !== 'format')
+    || !['text', 'json_object', 'json_schema'].includes(input.text.format?.type))) return true;
   if (Array.isArray(input.tools) && input.tools.some((tool) => tool && tool.type !== 'function')) return true;
-  const hasFunctionTools = Array.isArray(input.tools) && input.tools.some((tool) => tool?.type === 'function');
-  const reasoningEffort = input.reasoning_effort ?? input.reasoning?.effort;
-  if (hasFunctionTools && reasoningEffort !== undefined && String(reasoningEffort).trim().toLowerCase() !== 'none') return true;
+  // Responses 出站固定 none，function tools 不再因为原始思考强度禁止兼容转换。
   if (input.tool_choice && typeof input.tool_choice === 'object') {
     if (input.tool_choice.type && input.tool_choice.type !== 'function') return true;
     if (!input.tool_choice.name && !input.tool_choice.function?.name) return true;
@@ -481,11 +488,10 @@ function responseInputToOpenAI(input, model) {
       let argumentsValue = item.arguments || '{}';
       if (typeof argumentsValue !== 'string') argumentsValue = JSON.stringify(argumentsValue);
       const callId = responseId(item.call_id ?? item.id, `call_${crypto.randomBytes(8).toString('hex')}`);
-      result.messages.push({
-        role: 'assistant',
-        content: null,
-        tool_calls: [{ id: callId, type: 'function', function: { name: item.name, arguments: argumentsValue } }]
-      });
+      const call = { id: callId, type: 'function', function: { name: item.name, arguments: argumentsValue } };
+      const previous = result.messages.at(-1);
+      if (previous?.role === 'assistant' && previous.tool_calls) previous.tool_calls.push(call);
+      else result.messages.push({ role: 'assistant', content: null, tool_calls: [call] });
       continue;
     }
     const role = item.role || (item.type === 'message' ? 'user' : 'user');
@@ -515,6 +521,10 @@ function responseInputToOpenAI(input, model) {
   if (input.user !== undefined) result.user = input.user;
   if (input.seed !== undefined) result.seed = input.seed;
   if (input.response_format !== undefined) result.response_format = input.response_format;
+  if (input.text?.format) {
+    const { type, ...schema } = input.text.format;
+    result.response_format = type === 'json_schema' ? { type, json_schema: schema } : { type };
+  }
   return result;
 }
 
@@ -527,25 +537,17 @@ function openAIResponseToResponses(input, model) {
   if (message.content) {
     content.push({ type: 'output_text', text: textFromContent(message.content), annotations: [] });
   }
+  if (content.length) output.push({ id: messageId, type: 'message', status: 'completed', role: 'assistant', content });
   for (const call of message.tool_calls || []) {
     // 上游偶尔返回 null/数字/对象形式的 tool call id；Responses 客户端严格要求字符串，
     // 缺失时统一回填确定性 id，避免 “Expected 'id' to be a string”。
     const callId = responseId(call.id, `call_${crypto.randomBytes(8).toString('hex')}`);
-    content.push({
+    output.push({
       type: 'function_call',
       id: callId,
       call_id: callId,
       name: call.function?.name,
       arguments: call.function?.arguments || ''
-    });
-  }
-  if (content.length) {
-    output.push({
-      id: messageId,
-      type: 'message',
-      status: 'completed',
-      role: 'assistant',
-      content
     });
   }
   const text = content.filter((part) => part.type === 'output_text').map((part) => part.text).join('');
@@ -563,7 +565,9 @@ function openAIResponseToResponses(input, model) {
     })(),
     object: 'response',
     created_at: input.created || Math.floor(Date.now() / 1000),
-    status: 'completed',
+    status: choice.finish_reason === 'length' || choice.finish_reason === 'content_filter' ? 'incomplete' : 'completed',
+    ...(choice.finish_reason === 'length' || choice.finish_reason === 'content_filter'
+      ? { incomplete_details: { reason: choice.finish_reason === 'length' ? 'max_output_tokens' : 'content_filter' } } : {}),
     model,
     output,
     output_text: text,
@@ -591,7 +595,12 @@ function responsesResponseToOpenAI(input, model) {
   }
   const inputTokens = input?.usage?.input_tokens || 0;
   const outputTokens = input?.usage?.output_tokens || 0;
-  const finishReason = toolCalls.length ? 'tool_calls' : (input?.status === 'incomplete' ? 'length' : 'stop');
+  // 截断状态优先于工具调用：参数被 max_output_tokens 切断时，工具调用不可执行，
+  // 标成 tool_calls 会让客户端拿到半截 JSON 参数去执行。
+  const incompleteReason = input?.status === 'incomplete' ? (input?.incomplete_details?.reason || 'max_output_tokens') : null;
+  const finishReason = incompleteReason === 'content_filter' ? 'content_filter'
+    : incompleteReason ? 'length'
+    : (toolCalls.length ? 'tool_calls' : 'stop');
   return {
     id: responseId(input?.id, `chatcmpl_${crypto.randomBytes(8).toString('hex')}`),
     object: 'chat.completion',
@@ -643,7 +652,9 @@ function normalizeResponsesIds(value, state = {}, path = 'responses') {
   if (!value || typeof value !== 'object') return value;
   const result = {};
   for (const [key, item] of Object.entries(value)) {
-    if (['id', 'call_id', 'item_id', 'response_id', 'previous_response_id'].includes(key)) {
+    if (key === 'previous_response_id' && item === null) {
+      result[key] = null;
+    } else if (['id', 'call_id', 'item_id', 'response_id', 'previous_response_id'].includes(key)) {
       result[key] = responseId(item, `${key}_${crypto.createHash('sha256').update(`${path}.${key}`).digest('hex').slice(0, 16)}`);
     } else {
       result[key] = normalizeResponsesIds(item, state, `${path}.${key}`);

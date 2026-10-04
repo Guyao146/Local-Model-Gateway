@@ -9,23 +9,48 @@
 <body class="login-page">
   <main class="login-layout">
     <section class="login-intro" aria-labelledby="loginProductName">
-      <div class="login-brand"><span class="login-logo" aria-hidden="true"></span><strong id="loginProductName">本地模型网关</strong></div>
-      <div class="login-copy">
-        <div class="eyebrow">LOCAL MODEL GATEWAY</div>
-        <h1>模型、路由与用量，<br>汇入同一处管理。</h1>
-        <p>安全管理你的模型服务，认证异常也不会阻止此页面打开。</p>
+      <div class="login-panel-body">
+        <span class="login-logo" aria-hidden="true"><svg viewBox="0 0 24 24"><mask id="sakuraMarkPanel"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="11.8" r="2.1" fill="#000"/></mask><g fill="currentColor" mask="url(#sakuraMarkPanel)"><circle cx="12" cy="6.5" r="4.1"/><circle cx="6.77" cy="10.3" r="4.1"/><circle cx="8.77" cy="16.45" r="4.1"/><circle cx="15.23" cy="16.45" r="4.1"/><circle cx="17.23" cy="10.3" r="4.1"/></g></svg></span>
+        <h1 id="loginProductName" class="login-panel-title">本地模型网关</h1>
+        <p class="login-slogan">模型、路由与用量，<br>汇入同一处管理。</p>
+        <p class="login-slogan-note">安全管理你的模型服务，认证异常也不会阻止此页面打开。</p>
         <ul class="login-features">
-          <li><span aria-hidden="true">↗</span>统一管理 OpenAI 与 Anthropic 兼容上游</li>
-          <li><span aria-hidden="true">◷</span>查看路由状态、用量与请求记录</li>
-          <li><span aria-hidden="true">◎</span>OIDC + PKCE 保护远程管理访问</li>
+          <li>
+            <span class="login-feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 4.5 7.75 12 12l7.5-4.25L12 3.5Z"/><path d="m4.5 13 7.5 4.25L19.5 13"/></svg></span>
+            <div class="login-feature-text">
+              <strong>统一管理兼容上游</strong>
+              <small>集中接入 OpenAI 与 Anthropic 兼容服务</small>
+            </div>
+          </li>
+          <li>
+            <span class="login-feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3.5L9 5.5 13 18l2.5-6H21"/></svg></span>
+            <div class="login-feature-text">
+              <strong>路由与用量总览</strong>
+              <small>查看路由状态、用量与请求记录</small>
+            </div>
+          </li>
+          <li>
+            <span class="login-feature-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5c2.6 1.15 4.9 1.75 7 2v5.4c0 4.3-2.6 7.3-7 9.1-4.4-1.8-7-4.8-7-9.1V5.5c2.1-.25 4.4-.85 7-2Z"/><path d="m9.3 11.8 2 2 3.6-3.9"/></svg></span>
+            <div class="login-feature-text">
+              <strong>远程访问安全防护</strong>
+              <small>OIDC + PKCE 保护远程管理访问</small>
+            </div>
+          </li>
         </ul>
       </div>
-      <div class="login-provider"><span>OIDC · PKCE</span> 由 Authentik 提供统一登录</div>
+      <div class="login-panel-deco" aria-hidden="true"><svg viewBox="0 0 24 24"><mask id="sakuraMarkDeco"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="11.8" r="2.1" fill="#000"/></mask><g fill="currentColor" mask="url(#sakuraMarkDeco)"><circle cx="12" cy="6.5" r="4.1"/><circle cx="6.77" cy="10.3" r="4.1"/><circle cx="8.77" cy="16.45" r="4.1"/><circle cx="15.23" cy="16.45" r="4.1"/><circle cx="17.23" cy="10.3" r="4.1"/></g></svg></div>
+      <div class="login-panel-foot">
+        <span class="login-panel-eyebrow">LOCAL MODEL GATEWAY</span>
+        <span class="login-provider"><span>OIDC · PKCE</span> 由外部 OIDC 提供商提供统一登录</span>
+      </div>
     </section>
 
     <section class="login-access" aria-labelledby="loginHeading">
       <div class="login-card">
-        <div class="login-card-brand"><span class="login-logo" aria-hidden="true"></span><span>LOCAL MODEL GATEWAY</span></div>
+        <div class="login-card-brand">
+          <span class="login-logo" aria-hidden="true"><svg viewBox="0 0 24 24"><mask id="sakuraMarkMini"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="11.8" r="2.1" fill="#000"/></mask><g fill="currentColor" mask="url(#sakuraMarkMini)"><circle cx="12" cy="6.5" r="4.1"/><circle cx="6.77" cy="10.3" r="4.1"/><circle cx="8.77" cy="16.45" r="4.1"/><circle cx="15.23" cy="16.45" r="4.1"/><circle cx="17.23" cy="10.3" r="4.1"/></g></svg></span>
+          <span>本地模型网关</span>
+        </div>
         <h2 id="loginHeading">欢迎回来</h2>
         <p class="login-card-subtitle">登录后即可进入模型网关管理后台</p>
 
@@ -35,7 +60,7 @@
         </div>
 
         <div id="loginActions" class="login-actions hidden">
-          <a id="oidcLoginButton" class="button primary login-button" href="/auth/oidc/login?returnTo=%2F">使用 Authentik 登录</a>
+          <a id="oidcLoginButton" class="button primary login-button" href="/auth/oidc/login?returnTo=%2F">使用外部 OIDC 提供商登录</a>
           <button id="retryLoginButton" type="button" class="button secondary login-button">重新检查</button>
         </div>
 
@@ -52,7 +77,6 @@
         <div id="loginError" class="login-error hidden" role="alert"></div>
         <p class="login-help">认证服务暂时不可用时，可以留在此页面稍后重试；网关模型调用接口不会受到影响。</p>
       </div>
-      <div class="login-orbit" aria-hidden="true"></div>
     </section>
   </main>
   <script src="/login.js"></script>

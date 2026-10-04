@@ -23,7 +23,6 @@ const {
   responsesResponseToOpenAI,
   responseInputToOpenAI,
   responsesResponseFromOpenAI,
-  responsesResponseSkeleton,
   normalizeResponsesResponse,
   normalizeResponsesEvent,
   normalizeResponsesIds,
@@ -36,6 +35,11 @@ const { normalizeKeyAccess, modelRoute, keyAccessModels, isKeyModelAllowed } = r
 const { modalityMetadata, supportsInput, partModality, mapInputParts, inputMediaParts, assertMediaPreserved, normalizeTranslator } = require('./modalities');
 const { recordRequest, getMetrics, getLogs, getAllLogs, importUsageRecords, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
+const { inspectStreamStart } = require('./stream-start');
+const { createResponsesStream, createAnthropicStream } = require('./stream-conversion');
+const { classifyEndpointError, createEndpointHealth } = require('./endpoint-routing');
+const endpointHealth = createEndpointHealth();
+const responseBodies = new WeakMap();
 const { createAdminAuth } = require('./admin-auth');
 const { userFromBody, userSummary } = require('./admin-users');
 const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
@@ -336,6 +340,7 @@ function markUpstreamSuccess(upstream) {
 }
 
 function resetUpstreamHealth(upstreamId) {
+  endpointHealth.reset(upstreamId);
   upstreamHealth.set(upstreamId, {
     consecutiveFailures: 0,
     state: 'closed',
@@ -1063,18 +1068,14 @@ function requestIdFromRequest(req) {
 function normalizeReasoningForEndpoint(body, nativeResponses, upstreamProtocol, allowNone = false) {
   const result = { ...body };
   if (nativeResponses) {
-    if (result.reasoning_effort !== undefined) {
-      const effort = String(result.reasoning_effort).trim().toLowerCase();
-      // 上游明确声明 none 才发送；未声明时保留原有省略策略，避免破坏旧中转站兼容性。
-      if (effort && (effort !== 'none' || allowNone) && !result.reasoning) result.reasoning = { effort };
-      delete result.reasoning_effort;
+    if (result.response_format) {
+      const format = result.response_format;
+      result.text = { ...(result.text || {}), format: format.type === 'json_schema' ? { type: 'json_schema', ...format.json_schema } : format };
+      delete result.response_format;
     }
-    if (result.reasoning && typeof result.reasoning === 'object') {
-      const effort = result.reasoning.effort ? String(result.reasoning.effort).trim().toLowerCase() : '';
-      if (!effort || (effort === 'none' && !allowNone)) {
-        delete result.reasoning;
-      }
-    }
+    result.reasoning = { ...(result.reasoning && typeof result.reasoning === 'object' ? result.reasoning : {}), effort: 'none' };
+    delete result.reasoning_effort;
+    delete result.thinking;
   } else if (upstreamProtocol === 'openai') {
     if (result.reasoning !== undefined) {
       const effort = result.reasoning?.effort;
@@ -1111,33 +1112,51 @@ function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel,
     : localProtocol === 'openai'
       ? chatRequestRequiresNative(inputWithThinking)
       : false;
-  const nativeResponses = localProtocol === 'responses'
-    ? upstream.protocol === 'openai' && responsesMode !== 'chat' && options.forceChat !== true
-    : localProtocol === 'openai'
-      && responsesMode === 'native'
-      && upstream.protocol === 'openai'
-      && responsesMode !== 'chat'
-      && options.forceChat !== true;
-  const openAIInput = localProtocol === 'responses' ? responseInputToOpenAI(inputWithThinking, model) : inputWithThinking;
+  const preferred = responsesMode === 'native' ? 'responses' : responsesMode === 'chat' ? 'openai'
+    : upstream.protocol === 'anthropic' ? 'anthropic'
+      : localProtocol === 'responses' && !options.forceChat ? 'responses' : 'openai';
+  const targetProtocol = options.targetProtocol || (options.forceChat ? 'openai' : preferred);
+  // planOnly 只确定候选接口与协议模式，不构造请求体、不做无损转换校验：
+  // 首选接口转换不了的内容（例如附件）应跳过该候选，继续尝试同站其他兼容接口。
+  if (options.planOnly) return { targetProtocol, responsesMode, requiresNative };
+  const nativeResponses = targetProtocol === 'responses';
+  const openAIInput = localProtocol === 'responses' ? responseInputToOpenAI(inputWithThinking, model)
+    : localProtocol === 'anthropic' ? anthropicToOpenAI(inputWithThinking, model) : inputWithThinking;
+  if (targetProtocol !== localProtocol) {
+    const incompatibleTools = Array.isArray(openAIInput.tools) && openAIInput.tools.some((tool) => tool?.type !== 'function');
+    if (incompatibleTools || (openAIInput.n !== undefined && openAIInput.n !== 1)
+      || (targetProtocol === 'anthropic' && openAIInput.response_format)
+      || (targetProtocol === 'responses' && ['stop', 'presence_penalty', 'frequency_penalty', 'seed'].some((key) => openAIInput[key] !== undefined))) {
+      throw Object.assign(new Error('此请求包含目标接口无法无损转换的工具、候选数或响应格式'), { statusCode: 400, code: 'unsupported_protocol_conversion' });
+    }
+  }
   let body;
   if (nativeResponses) {
-    body = localProtocol === 'openai'
-      ? openAIRequestToResponses(inputWithThinking, model)
-      : { ...inputWithThinking, model };
+    body = localProtocol === 'responses' ? { ...inputWithThinking, model } : openAIRequestToResponses(openAIInput, model);
     body = normalizeResponsesIds(body);
-  } else if (localProtocol === upstream.protocol) {
+  } else if (localProtocol === targetProtocol) {
     body = { ...inputWithThinking, model };
-  } else if (upstream.protocol === 'anthropic') {
+  } else if (targetProtocol === 'anthropic') {
     body = openAIToAnthropic(openAIInput, model);
   } else {
-    body = localProtocol === 'anthropic' ? anthropicToOpenAI(inputWithThinking, model) : { ...openAIInput, model };
+    body = { ...openAIInput, model };
   }
-  body = normalizeReasoningForEndpoint(body, nativeResponses, upstream.protocol, modelEntry?.thinkingLevels?.includes('none') === true);
-  assertMediaPreserved(localInput, localProtocol, body, nativeResponses ? 'responses' : upstream.protocol);
+  // Responses 客户端降级时同样关闭思考，不能把被覆盖的 high 再带回 Chat。
+  if (localProtocol === 'responses' && !nativeResponses) {
+    delete body.reasoning;
+    delete body.thinking;
+    if (targetProtocol === 'openai') body.reasoning_effort = 'none';
+  }
+  body = normalizeReasoningForEndpoint(body, nativeResponses, targetProtocol,
+    localProtocol === 'responses' || modelEntry?.thinkingLevels?.includes('none') === true);
+  assertMediaPreserved(localInput, localProtocol, body, targetProtocol);
+  const headers = upstreamHeaders(upstream, requestId, options.requestHeaders);
+  if (targetProtocol === 'anthropic') headers['anthropic-version'] = '2023-06-01';
   return {
-    endpoint: resolveEndpoint(upstream.baseUrl, nativeResponses ? '/v1/responses' : upstream.protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'),
+    endpoint: resolveEndpoint(upstream.baseUrl, nativeResponses ? '/v1/responses' : targetProtocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'),
     body,
-    headers: upstreamHeaders(upstream, requestId, options.requestHeaders),
+    headers,
+    targetProtocol,
     nativeResponses,
     requiresNative,
     responsesMode
@@ -1150,28 +1169,123 @@ function responsesNativeUnsupported(status) {
 
 function responsesNativeCapabilityError(upstream) {
   return {
-    message: `上游“${upstream.name}”不支持此请求所需的 Responses API 原生能力。function tools 与 reasoning_effort 组合不能回退到 Chat Completions；请把该模型的「接口协议」改为「自动」或「Responses」，或确认上游已启用 /v1/responses。`,
+    message: `上游“${upstream.name}”不支持此请求所需的 Responses API 原生能力。内置工具、会话状态或无法无损转换的内容不能降级；请确认上游已启用 /v1/responses。`,
     type: 'unsupported_agent_capability'
   };
 }
 
-function resetResponseBody(response) {
-  try { response.body?.cancel(); } catch { /* response body is already consumed or closed */ }
+async function requestWithEndpointFallback({ input, localProtocol, upstream, model, requestId, options, settings, attempts, diag }) {
+  // 先确定候选接口，再逐个构造请求体；首选接口无法无损转换时同站其他接口仍可尝试。
+  let meta;
+  try { meta = makeUpstreamRequest(input, localProtocol, upstream, model, requestId, { ...options, planOnly: true }); }
+  catch (error) { return { failure: { status: error.statusCode || 400, body: { error: { message: error.message, code: error.code } } } }; }
+  const candidates = meta.responsesMode === 'auto'
+    ? [...new Set([meta.targetProtocol, 'responses', 'openai', 'anthropic'])]
+    : [meta.targetProtocol];
+  if (meta.requiresNative && meta.responsesMode !== 'chat' && meta.responsesMode !== 'native') candidates.splice(0, candidates.length, 'responses');
+  let failure = { status: 503, body: { error: { message: '此模型的可用接口正在冷却或恢复探测中', code: 'endpoint_cooling_down' } } };
+  for (const targetProtocol of candidates) {
+    let plan;
+    try { plan = makeUpstreamRequest(input, localProtocol, upstream, model, requestId, { ...options, targetProtocol }); }
+    catch (error) {
+      // 不允许通过切换接口丢弃图片、文件等内容；跳过此候选接口继续尝试。
+      failure = { status: error.statusCode || 400, body: { error: { message: error.message, code: error.code } } };
+      continue;
+    }
+    // 构造成功但请求本身要求原生 Responses：非 Responses 候选不能用，跳过。
+    if (meta.requiresNative && targetProtocol !== 'responses') {
+      failure = { status: 400, body: { error: responsesNativeCapabilityError(upstream) } };
+      continue;
+    }
+    let lease = endpointHealth.acquire(upstream, plan.body.model, targetProtocol);
+    if (!lease) continue;
+    for (let retry = 0; retry <= settings.upstreamRetries; retry += 1) {
+      captureUpstreamRequest(diag, plan);
+      const attempt = { upstream: upstream.name, protocol: targetProtocol, status: 502, retry };
+      attempts.push(attempt);
+      let response;
+      let body;
+      let kind;
+      try {
+        // 客户端已取消时不再发起请求，也不把取消计为上游故障。
+        if (options.clientSignal?.aborted) {
+          response?.cleanup?.();
+          return { failure: { status: 499, body: { error: { message: '客户端已取消请求', code: 'client_cancelled' } } }, stop: true };
+        }
+        response = await fetchUpstream(plan, options.clientSignal);
+        attempt.status = response.status;
+        if (!response.ok || !input.stream || !response.headers.get('content-type')?.includes('text/event-stream')) {
+          body = await readResponseJson(response);
+          if (response.ok && !isErrorPayload(body) && !input.stream) {
+            const valid = targetProtocol === 'responses' ? Array.isArray(body.output)
+              : targetProtocol === 'anthropic' ? Array.isArray(body.content) : Array.isArray(body.choices) && body.choices.length > 0;
+            if (valid) return { response, plan, lease };
+            body = { error: { message: '上游 JSON 响应与目标协议不符', code: 'invalid_upstream_response' } };
+          }
+          if (response.ok && !isErrorPayload(body)) body = { error: { message: '上游未返回请求所需的 SSE 流', code: 'invalid_upstream_stream' } };
+        } else {
+          response = await inspectStreamStart(response);
+          return { response, plan, lease };
+        }
+        kind = classifyEndpointError(response.status, body);
+      } catch (error) {
+        if (options.clientSignal?.aborted) {
+          // 客户端取消不是上游故障：不冷却接口、不标记上游失败、不记录错误。
+          response?.cleanup?.();
+          return { failure: { status: 499, body: { error: { message: '客户端已取消请求', code: 'client_cancelled' } } }, stop: true };
+        }
+        body = error.upstreamBody || { error: { message: error.name === 'AbortError' ? '上游请求超时' : `无法连接上游：${error.message}` } };
+        kind = error.upstreamBody ? classifyEndpointError(response?.status || 502, body) : 'network';
+      }
+      response?.cleanup?.();
+      const status = response?.status || 502;
+      failure = { status: status >= 400 ? status : 502, upstreamStatus: status, body };
+      attempt.error = upstreamErrorDetails(body, status);
+      // HTTP 2xx 但返回错误体或结构不符：这是失败尝试，统计时不能按状态码算成功。
+      if (status < 400) attempt.outcome = 'failure';
+      const cooled = endpointHealth.failure(lease, kind, settings.circuitBreakerFailureThreshold, settings.circuitBreakerCooldownMs);
+      if (kind === 'capability' && meta.requiresNative) failure = { status: 400, upstreamStatus: status, body: { error: responsesNativeCapabilityError(upstream) } };
+      if (kind === 'auth' || kind === 'request' || (kind === 'rate' && status >= 400 && status < 500 && status !== 429)) return { failure, stop: true };
+      // 仅计本站级的网络/限流故障；自动模式的服务错误由模型接口冷却处理。
+      if (kind === 'network' || kind === 'rate' || (kind === 'server' && meta.responsesMode !== 'auto')) markUpstreamFailure(upstream, failure.status, errorMessage(body));
+      if (kind === 'capability' || (kind === 'server' && cooled)) break;
+      if (retry === settings.upstreamRetries) return { failure };
+      await sleep(settings.retryDelayMs);
+      lease = endpointHealth.acquire(upstream, plan.body.model, targetProtocol);
+      if (!lease) {
+        if (kind === 'rate' || kind === 'network') return { failure };
+        break;
+      }
+    }
+  }
+  return { failure };
 }
 
-async function fetchUpstream(requestInfo) {
+async function fetchUpstream(requestInfo, clientSignal) {
   const controller = new AbortController();
   const timeoutMs = normalizeSettings(config.settings).upstreamTimeoutMs;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 客户端断开时立即中止上游请求，不再浪费上游配额。
+  const onClientAbort = () => controller.abort();
+  const detach = () => clientSignal?.removeEventListener('abort', onClientAbort);
+  if (clientSignal) {
+    if (clientSignal.aborted) controller.abort();
+    else clientSignal.addEventListener('abort', onClientAbort, { once: true });
+  }
   try {
-    return await fetch(requestInfo.endpoint, {
+    const response = await fetch(requestInfo.endpoint, {
       method: 'POST',
       headers: requestInfo.headers,
       body: JSON.stringify(requestInfo.body),
       signal: controller.signal
     });
-  } finally {
+    response.cleanup = () => { clearTimeout(timer); detach(); };
+    response.cancelUpstream = () => { controller.abort(); clearTimeout(timer); detach(); };
+    return response;
+  } catch (error) {
     clearTimeout(timer);
+    detach();
+    throw error;
   }
 }
 
@@ -1186,16 +1300,14 @@ async function fetchWithTimeout(url, options, timeoutMs = 30000) {
 }
 
 async function readResponseJson(response) {
-  const text = await response.text();
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { error: { message: text || `上游返回 HTTP ${response.status}`, type: 'upstream_error' } };
-  }
-}
-
-function shouldRetryUpstream(status) {
-  return status === 408 || status === 425 || status === 429 || status >= 500;
+  if (responseBodies.has(response)) return responseBodies.get(response);
+  const text = await response.text().finally(() => response.cleanup?.());
+  let body;
+  try { body = JSON.parse(text); }
+  catch { body = { error: { message: text || `上游返回 HTTP ${response.status}`, type: 'upstream_error' } }; }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) body = { error: { message: '上游返回了无效的 JSON 响应', type: 'upstream_error' } };
+  responseBodies.set(response, body);
+  return body;
 }
 
 function writeSse(res, data, eventName) {
@@ -1217,24 +1329,31 @@ async function consumeSse(response, onEvent) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let terminal = false;
   const flush = async (frame) => {
     const event = { name: '', data: '' };
     for (const line of frame.split(/\r?\n/)) {
       if (line.startsWith('event:')) event.name = line.slice(6).trim();
       if (line.startsWith('data:')) event.data += (event.data ? '\n' : '') + line.slice(5).trimStart();
     }
-    if (event.data) await onEvent(event);
+    if (!event.data) return;
+    // onEvent 返回 false 表示已收到协议级终止事件（[DONE]/message_stop 等），
+    // 后续数据不再属于本次请求，直接停止读取。
+    if (await onEvent(event) === false) terminal = true;
   };
   try {
-    while (true) {
+    while (!terminal) {
       const { done, value } = await reader.read();
       buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
       const frames = buffer.split(/\r?\n\r?\n/);
       buffer = frames.pop() || '';
-      for (const frame of frames) await flush(frame);
+      for (const frame of frames) {
+        await flush(frame);
+        if (terminal) break;
+      }
       if (done) break;
     }
-    if (buffer.trim()) await flush(buffer);
+    if (!terminal && buffer.trim()) await flush(buffer);
   } finally {
     await reader.cancel().catch(() => {});
     reader.releaseLock();
@@ -1246,6 +1365,7 @@ async function pipeRawStream(response, res, options = {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let terminal = false;
   const usage = {};
   const forwardFrame = (frame, separator = '') => {
     let data = '';
@@ -1254,11 +1374,13 @@ async function pipeRawStream(response, res, options = {}) {
       if (line.startsWith('event:')) eventName = line.slice(6).trim();
       if (line.startsWith('data:')) data += (data ? '\n' : '') + line.slice(5).trimStart();
     }
+    if (data === '[DONE]') terminal = true;
     let parsed;
     try { parsed = JSON.parse(data); } catch {
       res.write(frame + separator);
       return;
     }
+    if (['message_stop', 'response.completed', 'response.incomplete'].includes(eventName || parsed.type)) terminal = true;
     captureUpstreamEvent(options.diag, parsed);
     const failed = isErrorPayload(parsed, eventName);
     let output = options.normalizeResponses ? normalizeResponsesEvent(parsed, options.state) : parsed;
@@ -1290,13 +1412,16 @@ async function pipeRawStream(response, res, options = {}) {
     for (let index = 0; index < parts.length; index += 2) forwardFrame(parts[index], parts[index + 1]);
   };
   try {
-    while (true) {
+    while (!terminal) {
       const { done, value } = await reader.read();
       if (done) break;
       forwardText(decoder.decode(value, { stream: true }));
     }
-    forwardText(decoder.decode());
-    if (buffer) forwardFrame(buffer);
+    if (!terminal) {
+      forwardText(decoder.decode());
+      if (buffer) forwardFrame(buffer);
+    }
+    if (!terminal) throw new Error('上游 SSE 提前结束，未收到结束事件');
     res.end();
     return Object.keys(usage).length ? usage : undefined;
   } finally {
@@ -1346,8 +1471,11 @@ async function anthropicStreamAsOpenAI(response, res, model, diag) {
         const index = toolIndex++;
         toolIndexes.set(parsed.index ?? index, index);
         writeSse(res, openAIChunk(model, id, {
-          tool_calls: [{ index, id: block.id, type: 'function', function: { name: block.name, arguments: '' } }]
+          tool_calls: [{ index, id: block.id, type: 'function', function: { name: block.name,
+            arguments: block.input && Object.keys(block.input).length ? JSON.stringify(block.input) : '' } }]
         }));
+      } else if (block.type === 'text' && block.text) {
+        writeSse(res, openAIChunk(model, id, { content: block.text }));
       }
     } else if (eventName === 'content_block_delta') {
       ensureStarted();
@@ -1376,15 +1504,11 @@ async function anthropicStreamAsOpenAI(response, res, model, diag) {
       ensureStarted();
       writeSse(res, '[DONE]');
       stopped = true;
+      return false;
     }
   });
-  if (!stopped && !res.writableEnded) {
-    ensureStarted();
-    writeSse(res, '[DONE]');
-    res.end();
-  } else if (!res.writableEnded) {
-    res.end();
-  }
+  if (!stopped) throw new Error('上游 Messages 流提前结束，未收到 message_stop');
+  if (!res.writableEnded) res.end();
   return {
     prompt_tokens: usage.input_tokens || 0,
     completion_tokens: usage.output_tokens || 0,
@@ -1393,158 +1517,34 @@ async function anthropicStreamAsOpenAI(response, res, model, diag) {
 }
 
 async function openAIStreamAsAnthropic(response, res, model, diag) {
-  const id = `msg_${crypto.randomBytes(8).toString('hex')}`;
-  let started = false;
-  let blockOpen = false;
-  let toolBlockIndex = 0;
+  const converter = createAnthropicStream((data, name) => writeSse(res, data, name), model);
   let stopped = false;
-  const usage = { prompt_tokens: 0, completion_tokens: 0 };
-  const sendStart = () => {
-    if (started) return;
-    started = true;
-    writeSse(res, {
-      type: 'message_start',
-      message: {
-        id,
-        type: 'message',
-        role: 'assistant',
-        content: [],
-        model,
-        stop_reason: null,
-        stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 }
-      }
-    }, 'message_start');
-  };
   await consumeSse(response, async ({ name, data }) => {
-    if (data === '[DONE]') {
-      sendStart();
-      if (blockOpen) writeSse(res, { type: 'content_block_stop', index: toolBlockIndex }, 'content_block_stop');
-      writeSse(res, { type: 'message_stop' }, 'message_stop');
-      stopped = true;
-      return;
-    }
+    if (data === '[DONE]') { stopped = true; return false; }
     let parsed;
     try { parsed = JSON.parse(data); } catch { return; }
     captureUpstreamEvent(diag, parsed);
     throwIfStreamError(parsed, name);
-    sendStart();
-    if (parsed.usage) {
-      usage.prompt_tokens = parsed.usage.prompt_tokens || usage.prompt_tokens;
-      usage.completion_tokens = parsed.usage.completion_tokens || usage.completion_tokens;
-    }
-    const chunk = parsed.choices?.[0] || {};
-    const delta = chunk.delta || {};
-    if (delta.content) {
-      if (!blockOpen) {
-        writeSse(res, { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, 'content_block_start');
-        blockOpen = true;
-        toolBlockIndex = 0;
-      }
-      writeSse(res, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: delta.content } }, 'content_block_delta');
-    }
-    for (const tool of delta.tool_calls || []) {
-      const index = tool.index || 0;
-      if (tool.id || tool.function?.name) {
-        if (blockOpen) writeSse(res, { type: 'content_block_stop', index: toolBlockIndex }, 'content_block_stop');
-        toolBlockIndex = index;
-        blockOpen = true;
-        writeSse(res, {
-          type: 'content_block_start',
-          index,
-          content_block: { type: 'tool_use', id: tool.id || `tool_${index}`, name: tool.function?.name || '' }
-        }, 'content_block_start');
-      }
-      if (tool.function?.arguments) {
-        writeSse(res, {
-          type: 'content_block_delta',
-          index,
-          delta: { type: 'input_json_delta', partial_json: tool.function.arguments }
-        }, 'content_block_delta');
-      }
-    }
-    if (chunk.finish_reason) {
-      if (blockOpen) {
-        writeSse(res, { type: 'content_block_stop', index: toolBlockIndex }, 'content_block_stop');
-        blockOpen = false;
-      }
-      const stopReason = chunk.finish_reason === 'tool_calls' ? 'tool_use' : (chunk.finish_reason === 'length' ? 'max_tokens' : 'end_turn');
-      writeSse(res, { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: parsed.usage?.completion_tokens || 0 } }, 'message_delta');
-    }
+    converter.chunk(parsed);
   });
-  if (!stopped && !res.writableEnded) {
-    sendStart();
-    if (blockOpen) writeSse(res, { type: 'content_block_stop', index: toolBlockIndex }, 'content_block_stop');
-    writeSse(res, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } }, 'message_delta');
-    writeSse(res, { type: 'message_stop' }, 'message_stop');
-    res.end();
-  } else if (!res.writableEnded) {
-    res.end();
-  }
+  if (!stopped) throw new Error('上游 Chat 流提前结束，未收到 [DONE]');
+  const usage = converter.finish();
+  if (!res.writableEnded) res.end();
   return usage;
 }
 
-function makeResponsesMessage(id, model, text, status = 'in_progress') {
-  return {
-    id,
-    type: 'message',
-    status,
-    role: 'assistant',
-    content: text ? [{ type: 'output_text', text, annotations: [] }] : []
-  };
-}
-
 async function openAIStreamAsResponses(response, res, model, diag) {
-  const responseId = `resp_${crypto.randomBytes(8).toString('hex')}`;
-  const messageId = `msg_${crypto.randomBytes(8).toString('hex')}`;
-  let started = false;
-  let text = '';
-  let finishReason = 'stop';
-  let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-  const start = () => {
-    if (started) return;
-    started = true;
-    writeSse(res, { type: 'response.created', response: responsesResponseSkeleton(responseId, model) }, 'response.created');
-    writeSse(res, { type: 'response.output_item.added', response_id: responseId, output_index: 0, item: makeResponsesMessage(messageId, model, '') }, 'response.output_item.added');
-    writeSse(res, { type: 'response.content_part.added', response_id: responseId, item_id: messageId, output_index: 0, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } }, 'response.content_part.added');
-  };
+  const converter = createResponsesStream((data, name) => writeSse(res, data, name), model);
+  let stopped = false;
   await consumeSse(response, async ({ name, data }) => {
-    if (data === '[DONE]') {
-      start();
-      return;
-    }
-    let parsed;
-    try { parsed = JSON.parse(data); } catch { return; }
+    if (data === '[DONE]') { stopped = true; return false; }
+    const parsed = JSON.parse(data);
     captureUpstreamEvent(diag, parsed);
     throwIfStreamError(parsed, name);
-    start();
-    const choice = parsed.choices?.[0] || {};
-    const delta = choice.delta || {};
-    if (delta.content) {
-      text += delta.content;
-      writeSse(res, { type: 'response.output_text.delta', response_id: responseId, item_id: messageId, output_index: 0, content_index: 0, delta: delta.content }, 'response.output_text.delta');
-    }
-    if (choice.finish_reason) finishReason = choice.finish_reason;
-    if (parsed.usage) {
-      usage = {
-        prompt_tokens: parsed.usage.prompt_tokens || 0,
-        completion_tokens: parsed.usage.completion_tokens || 0,
-        total_tokens: parsed.usage.total_tokens || (parsed.usage.prompt_tokens || 0) + (parsed.usage.completion_tokens || 0)
-      };
-    }
+    converter.chunk(parsed);
   });
-  start();
-  const completedResponse = {
-    ...responsesResponseSkeleton(responseId, model),
-    status: 'completed',
-    output: [makeResponsesMessage(messageId, model, text, 'completed')],
-    output_text: text,
-    usage: { input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens, total_tokens: usage.total_tokens }
-  };
-  writeSse(res, { type: 'response.output_text.done', response_id: responseId, item_id: messageId, output_index: 0, content_index: 0, text }, 'response.output_text.done');
-  writeSse(res, { type: 'response.content_part.done', response_id: responseId, item_id: messageId, output_index: 0, content_index: 0, part: { type: 'output_text', text, annotations: [] } }, 'response.content_part.done');
-  writeSse(res, { type: 'response.output_item.done', response_id: responseId, output_index: 0, item: makeResponsesMessage(messageId, model, text, 'completed') }, 'response.output_item.done');
-  writeSse(res, { type: 'response.completed', response: completedResponse }, 'response.completed');
+  if (!stopped) throw new Error('上游流提前结束，未收到 [DONE]');
+  const usage = converter.finish();
   if (!res.writableEnded) res.end();
   return usage;
 }
@@ -1655,70 +1655,53 @@ async function responsesStreamAsOpenAI(response, res, model, diag) {
         completion_tokens: completionTokens,
         total_tokens: responseUsage.total_tokens || promptTokens + completionTokens
       };
-      const finishReason = tools.length ? 'tool_calls' : (eventName === 'response.incomplete' ? 'length' : 'stop');
+      // 截断状态优先于工具调用：被 max_output_tokens 切断的参数不可执行。
+      const incompleteReason = eventName === 'response.incomplete'
+        ? (parsed.response?.incomplete_details?.reason || 'max_output_tokens') : null;
+      const finishReason = incompleteReason === 'content_filter' ? 'content_filter'
+        : incompleteReason ? 'length'
+        : (tools.length ? 'tool_calls' : 'stop');
       writeSse(res, openAIChunk(model, chunkId, {}, finishReason, usage));
       writeSse(res, '[DONE]');
       stopped = true;
+      // 已发终止事件：停止读取剩余数据，避免上游不关连接时一直挂到超时再追加错误。
+      return false;
     }
   });
-  if (!stopped && !res.writableEnded) {
-    ensureStarted();
-    if (tools.some((tool) => !tool.started)) throw new Error('Responses 工具调用缺少名称或关联信息，无法转换为 Chat');
-    writeSse(res, openAIChunk(model, chunkId, {}, tools.length ? 'tool_calls' : 'stop', usage));
-    writeSse(res, '[DONE]');
-  }
+  if (!stopped) throw new Error('上游 Responses 流提前结束，未收到结束事件');
   if (!res.writableEnded) res.end();
   return usage;
 }
 
 async function anthropicStreamAsResponses(response, res, model, diag) {
-  const responseId = `resp_${crypto.randomBytes(8).toString('hex')}`;
-  const messageId = `msg_${crypto.randomBytes(8).toString('hex')}`;
-  let started = false;
-  let text = '';
-  let usage = { input_tokens: 0, output_tokens: 0 };
-  const start = () => {
-    if (started) return;
-    started = true;
-    writeSse(res, { type: 'response.created', response: responsesResponseSkeleton(responseId, model) }, 'response.created');
-    writeSse(res, { type: 'response.output_item.added', response_id: responseId, output_index: 0, item: makeResponsesMessage(messageId, model, '') }, 'response.output_item.added');
-    writeSse(res, { type: 'response.content_part.added', response_id: responseId, item_id: messageId, output_index: 0, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } }, 'response.content_part.added');
-  };
-  await consumeSse(response, async ({ name, data }) => {
-    if (data === '[DONE]') return;
-    let parsed;
-    try { parsed = JSON.parse(data); } catch { return; }
-    captureUpstreamEvent(diag, parsed);
-    const eventName = name || parsed.type;
-    throwIfStreamError(parsed, eventName);
-    if (eventName === 'message_start') {
-      start();
-      usage.input_tokens = parsed.message?.usage?.input_tokens || 0;
-    } else if (eventName === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
-      start();
-      text += parsed.delta.text || '';
-      writeSse(res, { type: 'response.output_text.delta', response_id: responseId, item_id: messageId, output_index: 0, content_index: 0, delta: parsed.delta.text || '' }, 'response.output_text.delta');
-    } else if (eventName === 'message_delta') {
-      usage.output_tokens = parsed.usage?.output_tokens || usage.output_tokens;
-    }
-  });
-  start();
-  const completedResponse = {
-    ...responsesResponseSkeleton(responseId, model),
-    status: 'completed',
-    output: [makeResponsesMessage(messageId, model, text, 'completed')],
-    output_text: text,
-    usage: { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens, total_tokens: usage.input_tokens + usage.output_tokens }
-  };
-  writeSse(res, { type: 'response.output_text.done', response_id: responseId, item_id: messageId, output_index: 0, content_index: 0, text }, 'response.output_text.done');
-  writeSse(res, { type: 'response.content_part.done', response_id: responseId, item_id: messageId, output_index: 0, content_index: 0, part: { type: 'output_text', text, annotations: [] } }, 'response.content_part.done');
-  writeSse(res, { type: 'response.output_item.done', response_id: responseId, output_index: 0, item: makeResponsesMessage(messageId, model, text, 'completed') }, 'response.output_item.done');
-  writeSse(res, { type: 'response.completed', response: completedResponse }, 'response.completed');
+  const converter = createResponsesStream((data, name) => writeSse(res, data, name), model);
+  const sink = chatConversionSink((chunk) => converter.chunk(chunk));
+  await anthropicStreamAsOpenAI(response, sink, model, diag);
+  const usage = converter.finish();
   if (!res.writableEnded) res.end();
-  return { prompt_tokens: usage.input_tokens, completion_tokens: usage.output_tokens, total_tokens: usage.input_tokens + usage.output_tokens };
+  return usage;
 }
 
-// 转译仅调用明确配置的本地模型，不回调 forwardModelRequest，因而不会递归。
+function chatConversionSink(onChunk) {
+  return {
+    writableEnded: false,
+    write(frame) {
+      if (!frame.startsWith('data: ')) return;
+      const data = frame.slice(6).trim();
+      if (data !== '[DONE]') onChunk(JSON.parse(data));
+    },
+    end() { this.writableEnded = true; }
+  };
+}
+
+async function responsesStreamAsAnthropic(response, res, model, diag) {
+  const converter = createAnthropicStream((data, name) => writeSse(res, data, name), model);
+  await responsesStreamAsOpenAI(response, chatConversionSink((chunk) => converter.chunk(chunk)), model, diag);
+  const usage = converter.finish();
+  if (!res.writableEnded) res.end();
+  return usage;
+}
+
 async function translateModality(part, protocol, translator, localModel, targetUpstream, targetModel, localKey, requestId) {
   const fail = (message, statusCode = 400, code = 'modality_translation_failed') => {
     throw Object.assign(new Error(message), { statusCode, code });
@@ -1850,129 +1833,61 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   let upstream = null;
   let lastError = null;
   let nativeResponses = false;
-  // 每个上游失败后原地重试的次数；0 表示失败即切换（保持旧行为）。
-  const maxUpstreamRetries = settings.upstreamRetries;
-  let attemptCount = 0;
-  // 4xx 参数/鉴权类错误不可重试，也不该换站掩盖配置问题。
+  let activePlan;
+  let activeLease;
+  let actualProtocol;
   let stopRequesting = false;
   const translationCache = new Map();
+  // 从请求开始就贯穿客户端取消信号：首帧前断开也不会继续重试、换上游、换接口。
+  const clientAbortController = new AbortController();
+  let clientAborted = false;
+  res.once('close', () => {
+    // 正常结束后也会触发 close，此时中止已完成的请求没有副作用。
+    clientAborted = true;
+    clientAbortController.abort();
+    upstreamResponse?.cancelUpstream?.();
+  });
 
   for (let index = 0; index < maxAttempts && !stopRequesting; index += 1) {
+    if (clientAborted) break;
     upstream = upstreams[index];
     let requestInput = routeThinkingLevel === 'auto' && input.thinkingLevel === undefined
       ? input
       : { ...input, thinkingLevel: input.thinkingLevel ?? routeThinkingLevel };
     const routeResponsesMode = selected.route?.responsesMode;
-    let requestInfo;
     try {
       requestInput = await prepareModalities(requestInput, localProtocol, upstream, upstreamModel, selected.route, localKey, requestId, translationCache);
-      requestInfo = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { requestHeaders: req.headers, responsesMode: routeResponsesMode });
     } catch (error) {
-      upstreamResponse = null;
       lastError = { status: error.statusCode || 400, body: { error: { message: error.message, code: error.code || 'modality_translation_failed' } } };
       attempts.push({ upstream: upstream.name, status: lastError.status, retry: 0, error: upstreamErrorDetails(lastError.body, lastError.status) });
       if (lastError.status === 403 || lastError.status >= 500) stopRequesting = true;
       continue;
     }
-    captureUpstreamRequest(diag, requestInfo);
-    if (requestInfo.requiresNative && (upstream.protocol !== 'openai' || requestInfo.responsesMode === 'chat')) {
-      // 协议能力不符是配置问题，重试同一个上游结果相同，直接换站。
-      upstreamResponse = null;
-      lastError = { status: 400, body: { error: responsesNativeCapabilityError(upstream) } };
-      attempts.push({ upstream: upstream.name, status: 400, retry: 0, error: upstreamErrorDetails(lastError.body, 400) });
-      continue;
-    }
-    // 同一上游原地重试：网络抖动、超时或可重试状态码先重试本站，
-    // 重试次数用尽再切换到下一优先级的上游。
-    for (let retry = 0; ; retry += 1) {
-      log('route request', {
-        localProtocol,
-        model: localModel,
-        upstream: upstream.name,
-        upstreamModel,
-        stream: wantsStream,
-        attempt: attemptCount + 1,
-        retry,
-        totalCandidates: upstreams.length
-      });
-      attemptCount += 1;
-      try {
-        upstreamResponse = await fetchUpstream(requestInfo);
-        nativeResponses = requestInfo.nativeResponses;
-        attempts.push({ upstream: upstream.name, status: upstreamResponse.status, retry });
-        if (
-          requestInfo.nativeResponses
-          && requestInfo.responsesMode !== 'native'
-          && responsesNativeUnsupported(upstreamResponse.status)
-          && !requestInfo.requiresNative
-        ) {
-          log('upstream does not expose native Responses API, falling back to Chat Completions', {
-            upstream: upstream.name,
-            status: upstreamResponse.status,
-            retry
-          });
-          resetResponseBody(upstreamResponse);
-          const fallbackRequest = makeUpstreamRequest(requestInput, localProtocol, upstream, upstreamModel, requestId, { forceChat: true, requestHeaders: req.headers, responsesMode: routeResponsesMode });
-          upstreamResponse = await fetchUpstream(fallbackRequest);
-          nativeResponses = false;
-          attempts.push({ upstream: upstream.name, status: upstreamResponse.status, retry, fallback: 'chat_completions' });
-        }
-        if (requestInfo.nativeResponses && requestInfo.requiresNative && responsesNativeUnsupported(upstreamResponse.status)) {
-          const unsupportedStatus = upstreamResponse.status;
-          const unsupportedBody = await readResponseJson(upstreamResponse);
-          upstreamResponse = null;
-          lastError = {
-            status: 400,
-            body: { error: { ...responsesNativeCapabilityError(upstream), upstream_error: errorMessage(unsupportedBody) } }
-          };
-          attempts[attempts.length - 1].error = upstreamErrorDetails(unsupportedBody, unsupportedStatus);
-          break;
-        }
-      } catch (error) {
-        if (error.statusCode && error.code === 'unsupported_modality_conversion') {
-          upstreamResponse = null;
-          lastError = { status: error.statusCode, body: { error: { message: error.message, code: error.code } } };
-          stopRequesting = true;
-          break;
-        }
-        const message = error.name === 'AbortError' ? '上游请求超时' : `无法连接上游：${error.message}`;
-        attempts.push({ upstream: upstream.name, status: 502, retry, error: upstreamErrorDetails({ message }, 502) });
-        markUpstreamFailure(upstream, 502, message);
-        lastError = { status: 502, body: { message } };
-        if (retry < maxUpstreamRetries) {
-          log('upstream unavailable, retrying same upstream', { upstream: upstream.name, retry, message });
-          await sleep(settings.retryDelayMs);
-          continue;
-        }
-        log('upstream unavailable, trying fallback', { upstream: upstream.name, retry, message });
-        break;
+    const result = await requestWithEndpointFallback({ input: requestInput, localProtocol, upstream, model: upstreamModel,
+      requestId, options: { requestHeaders: req.headers, responsesMode: routeResponsesMode, clientSignal: clientAbortController.signal }, settings, attempts, diag });
+    if (result.response) {
+      if (res.destroyed || clientAborted) {
+        result.response.cancelUpstream?.();
+        endpointHealth.release(result.lease);
+        return;
       }
-
-      if (upstreamResponse.ok) {
-        markUpstreamSuccess(upstream);
-        break;
-      }
-
-      const body = await readResponseJson(upstreamResponse);
-      lastError = { status: upstreamResponse.status, body };
-      attempts[attempts.length - 1].error = upstreamErrorDetails(body, upstreamResponse.status);
-      if (!shouldRetryUpstream(upstreamResponse.status)) {
-        // 4xx 参数/鉴权错误：重试和换站都只会掩盖配置问题，直接返回。
-        log('upstream returned non-retryable status', { upstream: upstream.name, status: upstreamResponse.status, retry });
-        stopRequesting = true;
-        break;
-      }
-      markUpstreamFailure(upstream, upstreamResponse.status, errorMessage(body));
-      if (retry < maxUpstreamRetries) {
-        log('upstream returned retryable status, retrying same upstream', { upstream: upstream.name, status: upstreamResponse.status, retry });
-        await sleep(settings.retryDelayMs);
-        continue;
-      }
-      log('upstream returned retryable status, trying fallback', { upstream: upstream.name, status: upstreamResponse.status, retry });
+      upstreamResponse = result.response;
+      activePlan = result.plan;
+      activeLease = result.lease;
+      actualProtocol = activePlan.targetProtocol;
+      nativeResponses = activePlan.nativeResponses;
       break;
     }
-    if (upstreamResponse && upstreamResponse.ok) break;
+    lastError = result.failure;
+    stopRequesting = result.stop === true;
+    if (clientAborted) break;
     if (!stopRequesting && index < maxAttempts - 1) await sleep(settings.retryDelayMs);
+  }
+
+  if (clientAborted && !upstreamResponse) {
+    // 客户端已取消：不记录接口故障、不切换上游，也不计入失败统计。
+    log('client cancelled', { requestId, protocol: localProtocol, model: localModel });
+    return;
   }
 
   if (!upstreamResponse || !upstreamResponse.ok) {
@@ -1986,7 +1901,7 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
       upstream: upstream?.name,
       upstreamModel,
       error: errorMessage(failureBody, '所有上游都不可用'),
-      upstreamError: upstreamErrorDetails(failure.body, failure.status)
+      upstreamError: upstreamErrorDetails(failure.body, failure.upstreamStatus ?? failure.status)
     });
     const errorResponse = errorForProtocol(localProtocol, failureBody, failure.status);
     logRequestError(requestId, failure.status, errorResponse);
@@ -1997,30 +1912,15 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   if (!wantsStream) {
     const body = await readResponseJson(upstreamResponse);
     captureUpstreamEvent(diag, body);
-    if (isErrorPayload(body)) {
-      // 有些上游在 HTTP 200 内返回失败对象；不能经转换后变成空的成功回复。
-      const result = (nativeResponses && localProtocol === 'responses') || (!nativeResponses && localProtocol === upstream.protocol)
-        ? body : errorForProtocol(localProtocol, body, 502);
-      finishMetrics({
-        success: false,
-        status: 502,
-        upstream: upstream.name,
-        upstreamModel,
-        error: errorMessage(body),
-        upstreamError: upstreamErrorDetails(body, upstreamResponse.status)
-      });
-      sendJsonWithRequestId(res, upstreamResponse.status, result, requestId);
-      return;
-    }
     let result;
     if (nativeResponses) {
-      result = localProtocol === 'openai'
-        ? responsesResponseToOpenAI(body, localModel)
-        : normalizeResponsesResponse(body, localModel);
-    } else if (localProtocol === upstream.protocol) {
+      result = localProtocol === 'openai' ? responsesResponseToOpenAI(body, localModel)
+        : localProtocol === 'anthropic' ? openAIResponseToAnthropic(responsesResponseToOpenAI(body, localModel), localModel)
+          : normalizeResponsesResponse(body, localModel);
+    } else if (localProtocol === actualProtocol) {
       result = { ...body, model: localModel };
     } else if (localProtocol === 'responses') {
-      const openAIResult = upstream.protocol === 'anthropic'
+      const openAIResult = actualProtocol === 'anthropic'
         ? anthropicResponseToOpenAI(body, localModel)
         : { ...body, model: localModel };
       // Chat Completions 回退成 Responses 时，上游 id 同样可能是 null/数字/对象，
@@ -2038,6 +1938,8 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
       warn(diag, `输出含非字符串 id：${bad.path} = ${JSON.stringify(bad.value)}（已自动修正为字符串）`);
     }
     if (badIds.length) normalizeIdsInPlace(result);
+    endpointHealth.success(activeLease);
+    markUpstreamSuccess(upstream);
     sample(diag.output, JSON.stringify(result));
     finishMetrics({ success: true, status: 200, upstream: upstream.name, upstreamModel, usage: result.usage || body.usage });
     sendJsonWithRequestId(res, 200, result, requestId);
@@ -2058,18 +1960,30 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     if (nativeResponses) {
       streamUsage = localProtocol === 'openai'
         ? await responsesStreamAsOpenAI(upstreamResponse, res, localModel, diag)
+        : localProtocol === 'anthropic' ? await responsesStreamAsAnthropic(upstreamResponse, res, localModel, diag)
         : await pipeRawStream(upstreamResponse, res, { normalizeResponses: true, state: {}, diag });
     }
-    else if (localProtocol === upstream.protocol) streamUsage = await pipeRawStream(upstreamResponse, res, { diag });
+    else if (localProtocol === actualProtocol) streamUsage = await pipeRawStream(upstreamResponse, res, { diag });
     else if (localProtocol === 'openai') streamUsage = await anthropicStreamAsOpenAI(upstreamResponse, res, localModel, diag);
     else if (localProtocol === 'responses') {
-      streamUsage = upstream.protocol === 'anthropic'
+      streamUsage = actualProtocol === 'anthropic'
         ? await anthropicStreamAsResponses(upstreamResponse, res, localModel, diag)
         : await openAIStreamAsResponses(upstreamResponse, res, localModel, diag);
     }
     else streamUsage = await openAIStreamAsAnthropic(upstreamResponse, res, localModel, diag);
+    endpointHealth.success(activeLease);
+    markUpstreamSuccess(upstream);
     finishMetrics({ success: true, status: 200, upstream: upstream.name, upstreamModel, usage: streamUsage });
   } catch (error) {
+    if (clientAborted || res.destroyed) {
+      // 客户端取消：不冷却接口、不标记上游失败、不追加错误、不计入失败统计。
+      log('client cancelled', { requestId, message: error.message });
+      return;
+    }
+    const kind = classifyEndpointError(upstreamResponse.status, error.upstreamBody || { message: error.message });
+    endpointHealth.failure(activeLease, kind, settings.circuitBreakerFailureThreshold, settings.circuitBreakerCooldownMs);
+    if (kind === 'network' || kind === 'rate') markUpstreamFailure(upstream, 502, error.message);
+    attempts[attempts.length - 1].error = upstreamErrorDetails(error.upstreamBody || { message: error.message }, upstreamResponse.status);
     log('stream error', { requestId, message: error.message });
     finishMetrics({
       success: false,
@@ -2086,6 +2000,9 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
       }
       res.end();
     }
+  } finally {
+    upstreamResponse.cleanup?.();
+    endpointHealth.release(activeLease);
   }
 }
 
@@ -2713,6 +2630,7 @@ async function handleAdmin(req, res, pathname) {
   }
   if (req.method === 'POST' && pathname === '/api/admin/config/import') {
     const body = await readBody(req);
+    endpointHealth.reset();
     const imported = importConfig(body, body.preserveCredentials !== false);
     resetRoutingState();
     sendJson(res, 200, imported);
@@ -2746,6 +2664,7 @@ async function handleAdmin(req, res, pathname) {
       return;
     }
     config.upstreams[index] = upstream;
+    endpointHealth.reset(id);
     upstreamBalances.delete(id);
     resetRoutingState();
     saveConfig(config);
@@ -2756,6 +2675,7 @@ async function handleAdmin(req, res, pathname) {
     const id = decodeURIComponent(upstreamMatch[1]);
     config.upstreams = config.upstreams.filter((item) => item.id !== id);
     upstreamHealth.delete(id);
+    endpointHealth.reset(id);
     upstreamBalances.delete(id);
     config.routes = config.routes
       .filter((item) => item.upstreamId !== id)

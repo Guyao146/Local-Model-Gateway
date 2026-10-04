@@ -156,7 +156,10 @@ function normalizeAttempts(attempts) {
     // retry 是同一上游的第几次原地重试（0 = 首次），用来还原「重试→切换」的顺序。
     const retry = Number(attempt.retry);
     if (Number.isInteger(retry) && retry > 0) item.retry = retry;
+    // HTTP 2xx 但返回错误体的尝试由网关标记为失败，导入时不能按状态码重新算成成功。
+    if (attempt.outcome === 'failure') item.outcome = 'failure';
     if (typeof attempt.fallback === 'string' && attempt.fallback) item.fallback = attempt.fallback.slice(0, 60);
+    if (['openai', 'responses', 'anthropic'].includes(attempt.protocol)) item.protocol = attempt.protocol;
     const error = normalizeErrorDetails(attempt.error);
     if (error) item.error = error;
     return item;
@@ -233,7 +236,7 @@ function recordRequest(entry) {
   totals.completionTokens += usage.completionTokens;
   totals.totalTokens += usage.totalTokens;
 
-  for (const attempt of attempts) {
+  for (const [index, attempt] of attempts.entries()) {
     const name = attempt.upstream;
     const item = metrics.byUpstream[name] || {
       requests: 0,
@@ -244,9 +247,13 @@ function recordRequest(entry) {
       totalTokens: 0
     };
     item.requests += 1;
-    if (attempt.status !== null && attempt.status >= 200 && attempt.status < 400) item.successful += 1;
+    // HTTP 2xx 但返回错误体的尝试标记了 outcome='failure'，不能按状态码算成功。
+    const succeeded = attempt.outcome === 'failure' ? false
+      : attempt.status !== null && attempt.status >= 200 && attempt.status < 400;
+    if (succeeded) item.successful += 1;
     else item.failed += 1;
-    if (attempt.upstream === logEntry.upstream) {
+    // 用量只归属该上游的最后一次尝试（通常是成功的那次），不能按尝试次数重复累计。
+    if (index === attempts.map((entry) => entry.upstream).lastIndexOf(logEntry.upstream)) {
       item.promptTokens += usage.promptTokens;
       item.completionTokens += usage.completionTokens;
       item.totalTokens += usage.totalTokens;
@@ -309,11 +316,15 @@ function importUsageRecords(records) {
     totals.promptTokens += usage.promptTokens;
     totals.completionTokens += usage.completionTokens;
     totals.totalTokens += usage.totalTokens;
-    for (const attempt of attempts) {
+    for (const [index, attempt] of attempts.entries()) {
       const item = metrics.byUpstream[attempt.upstream] || { requests: 0, successful: 0, failed: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
       item.requests += 1;
-      if (attempt.status !== null && attempt.status >= 200 && attempt.status < 400) item.successful += 1; else item.failed += 1;
-      if (attempt.upstream === entry.upstream) { item.promptTokens += usage.promptTokens; item.completionTokens += usage.completionTokens; item.totalTokens += usage.totalTokens; }
+      // HTTP 2xx 但返回错误体的尝试已标 outcome='failure'，不能按状态码算成功。
+      const succeeded = attempt.outcome === 'failure' ? false
+        : attempt.status !== null && attempt.status >= 200 && attempt.status < 400;
+      if (succeeded) item.successful += 1; else item.failed += 1;
+      // 用量只归属该上游的最后一次尝试，不能按尝试次数重复累计。
+      if (index === attempts.map((attemptEntry) => attemptEntry.upstream).lastIndexOf(entry.upstream)) { item.promptTokens += usage.promptTokens; item.completionTokens += usage.completionTokens; item.totalTokens += usage.totalTokens; }
       metrics.byUpstream[attempt.upstream] = item;
     }
   }

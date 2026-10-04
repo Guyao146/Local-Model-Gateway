@@ -146,7 +146,7 @@ async function main() {
     assert.equal(visibleConfig.status, 200, JSON.stringify(visibleConfig.body));
     assert.equal(visibleConfig.body.localApiKeys[0].key, config.localApiKeys[0].key, '管理后台应返回完整本地调用 Key');
     const add = (name, port, authType = 'none', apiKey = '') => requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
-      method: 'POST', headers: adminHeaders, body: JSON.stringify({ name, baseUrl: `http://127.0.0.1:${port}/v1`, protocol: 'openai', authType, apiKey, models: 'test-model' })
+      method: 'POST', headers: adminHeaders, body: JSON.stringify({ name, baseUrl: `http://127.0.0.1:${port}/v1`, protocol: 'openai', responsesMode: 'chat', authType, apiKey, models: 'test-model' })
     });
     const invalidBalanceEndpoint = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
       method: 'POST',
@@ -337,12 +337,15 @@ async function main() {
         method: 'POST', headers: { ...localHeaders, 'x-request-id': requestId },
         body: JSON.stringify({ model: 'test-local', messages: [{ role: 'user', content: 'error code' }] })
       });
-      assert.equal(result.status, failure.status, '错误格式化不能改变 HTTP 状态');
+      assert.equal(result.status, failure.status === 200 ? 502 : failure.status, 'HTTP 200 错误体应返回 502');
       assertJsonError(result, requestId, failure.code, failure.message);
       if (failure.body?.error && typeof failure.body.error === 'object') {
         assert.equal(result.body.error.code, failure.body.error.code, '结构化 code 保持原值');
       }
     }
+    await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams/${encodeURIComponent(fallbackResult.body.id)}/reset-health`, {
+      method: 'POST', headers: adminHeaders, body: '{}'
+    });
     upstreamFailure = { disconnect: true };
     const disconnected = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
       method: 'POST', headers: { ...localHeaders, 'x-request-id': 'connection-error' },
@@ -575,7 +578,7 @@ async function main() {
     assert.equal(lastKeyDelete.status, 400, JSON.stringify(lastKeyDelete.body));
     console.log('gateway integration tests passed');
   } catch (error) {
-    throw new Error(`${error.message}\n${stderr}`);
+    throw new Error(`${error.stack}\n${stderr}`);
   } finally {
     gateway.kill();
     await Promise.all([

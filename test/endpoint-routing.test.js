@@ -1,0 +1,88 @@
+const assert = require('node:assert/strict');
+const { classifyEndpointError, createEndpointHealth } = require('../src/endpoint-routing');
+const { createResponsesStream, createAnthropicStream } = require('../src/stream-conversion');
+
+const incompatible = { error: { message: 'Function tools with reasoning_effort are not supported in /v1/chat/completions. Use /v1/responses instead.' } };
+assert.equal(classifyEndpointError(400, incompatible), 'capability');
+assert.equal(classifyEndpointError(200, incompatible), 'capability');
+for (const status of [401, 403]) assert.equal(classifyEndpointError(status, incompatible), 'auth');
+assert.equal(classifyEndpointError(429, incompatible), 'rate');
+assert.equal(classifyEndpointError(404, { error: { code: 'model_not_found', message: 'model not found' } }), 'request');
+assert.equal(classifyEndpointError(404, { error: { message: 'Cannot POST /v1/messages' } }), 'capability');
+assert.equal(classifyEndpointError(400, { error: { message: 'messages must be an array' } }), 'request');
+assert.equal(classifyEndpointError(503, { error: { message: 'busy' } }), 'server');
+assert.equal(classifyEndpointError(502, {}, true), 'network');
+let time = 1000;
+const health = createEndpointHealth({ now: () => time });
+const upstream = { id: 'one', baseUrl: 'http://localhost/v1' };
+const acquire = (model = 'm', protocol = 'openai') => health.acquire(upstream, model, protocol);
+assert.equal(health.failure(acquire(), 'server', 2, 1000), false);
+assert.equal(health.failure(acquire(), 'server', 2, 1000), true);
+assert.equal(acquire(), null);
+assert.ok(health.acquire({ ...upstream, id: 'two' }, 'm', 'openai'), 'upstreams are isolated');
+assert.ok(health.acquire({ ...upstream, baseUrl: 'http://localhost/other' }, 'm', 'openai'), 'addresses are isolated');
+assert.ok(acquire('other'));
+assert.ok(acquire('m', 'responses'));
+time += 1000;
+const probe = acquire();
+assert.equal(probe.probe, true);
+assert.equal(acquire(), null, 'only one recovery probe');
+health.success(probe);
+assert.equal(acquire().probe, false);
+assert.equal(health.failure(acquire(), 'capability', 20, 1000), true);
+health.reset(upstream.id);
+assert.ok(acquire());
+health.failure(acquire(), 'rate', 1, 1000);
+assert.ok(acquire(), 'rate limits do not poison endpoint capabilities');
+const concurrentHealth = createEndpointHealth({ now: () => time });
+const take = () => concurrentHealth.acquire(upstream, 'concurrent', 'openai');
+const oldSuccess = take();
+const oldFailure = take();
+const oldRelease = take();
+concurrentHealth.failure(take(), 'capability', 3, 1000);
+time += 1000;
+const currentProbe = take();
+assert.equal(currentProbe.probe, true);
+concurrentHealth.success(oldSuccess);
+concurrentHealth.failure(oldFailure, 'server', 3, 1000);
+concurrentHealth.release(oldRelease);
+assert.equal(take(), null, 'pre-cooldown requests cannot release the current probe');
+concurrentHealth.failure(currentProbe, 'server', 3, 1000);
+assert.equal(take(), null, 'failed probe opens another cooldown');
+time += 1000;
+const nextProbe = take();
+concurrentHealth.release(currentProbe);
+assert.equal(take(), null, 'settled probe cannot release the next probe');
+concurrentHealth.success(nextProbe);
+assert.equal(take().probe, false);
+const events = [];
+const stream = createResponsesStream((data) => events.push(structuredClone(data)), 'local');
+stream.chunk({ choices: [{ delta: { content: 'hello', tool_calls: [
+  { index: 0, id: 'a', function: { name: 'first', arguments: '{' } },
+  { index: 1, id: 'b', function: { name: 'second', arguments: '{}' } }
+] } }] });
+stream.chunk({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"x":1}' } }] }, finish_reason: 'tool_calls' }] });
+stream.finish();
+const completed = events.at(-1).response;
+assert.equal(completed.output[0].content[0].text, 'hello');
+assert.deepEqual(completed.output.slice(1).map((item) => [item.call_id, item.name, item.arguments]), [['a', 'first', '{"x":1}'], ['b', 'second', '{}']]);
+assert.equal(events.filter((item) => item.type === 'response.function_call_arguments.done').length, 2);
+assert.deepEqual(events.map((item) => item.sequence_number), events.map((_, index) => index));
+const incompleteEvents = [];
+const limited = createResponsesStream((data) => incompleteEvents.push(data), 'local');
+limited.chunk({ choices: [{ delta: { content: 'partial' }, finish_reason: 'length' }] });
+limited.finish();
+assert.equal(incompleteEvents.at(-1).type, 'response.incomplete');
+const messageEvents = [];
+const messages = createAnthropicStream((data) => messageEvents.push(data), 'm');
+messages.chunk({ choices: [{ delta: { content: 'text', tool_calls: [
+  { index: 0, id: 'a', function: { name: 'first', arguments: '{' } },
+  { index: 1, id: 'b', function: { name: 'second', arguments: '{}' } }
+] } }] });
+messages.chunk({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '}' } }] }, finish_reason: 'tool_calls' }] });
+messages.finish();
+assert.deepEqual(messageEvents.filter((event) => event.type === 'content_block_start').map((event) => event.index), [0, 1, 2]);
+assert.deepEqual(messageEvents.filter((event) => event.type === 'content_block_stop').map((event) => event.index), [0, 1, 2]);
+assert.equal(messageEvents.at(-1).type, 'message_stop');
+assert.equal(messageEvents.filter((event) => event.index === 1 && event.delta).map((event) => event.delta.partial_json).join(''), '{}');
+console.log('endpoint routing and stream conversion tests passed');

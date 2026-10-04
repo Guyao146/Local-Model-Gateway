@@ -176,7 +176,7 @@ async function main() {
 
     const loginPage = await request(`${baseUrl}${remotePage.headers.location}`, { headers: remoteHeaders });
     assert.equal(loginPage.status, 200, loginPage.raw);
-    assert.match(loginPage.raw, /使用 Authentik 登录/);
+    assert.match(loginPage.raw, /使用外部 OIDC 提供商登录/);
     assert.equal(discoveryRequests, 0, '渲染登录页不应访问 Authentik discovery');
 
     const unavailableLogin = await request(`${baseUrl}/auth/oidc/login?returnTo=%2F`, { headers: remoteHeaders });
@@ -185,7 +185,7 @@ async function main() {
     assert.equal(discoveryRequests, 1);
     const unavailablePage = await request(`${baseUrl}${unavailableLogin.headers.location}`, { headers: remoteHeaders });
     assert.equal(unavailablePage.status, 200, unavailablePage.raw);
-    assert.match(unavailablePage.raw, /使用 Authentik 登录/);
+    assert.match(unavailablePage.raw, /使用外部 OIDC 提供商登录/);
 
     discoveryAvailable = true;
     const login = await request(`${baseUrl}/auth/oidc/login?returnTo=%2F`, { headers: remoteHeaders });
