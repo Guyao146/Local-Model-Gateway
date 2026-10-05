@@ -36,4 +36,5 @@ assert.equal(electronPackage.version, rootPackage.version);
 assert.equal(webviewProject.match(/<Version>([^<]+)<\/Version>/)?.[1], rootPackage.version, 'WebView2 版本必须与根包一致');
 assert.equal(indexHtml.match(/class="sidebar-version"[^\n]*<strong>v([^<]+)<\/strong>/)?.[1], rootPackage.version, '页面版本必须与根包一致');
 assert.match(fs.readFileSync(path.join(root, 'clients', 'electron', 'package.json'), 'utf8'), /preload\.js/);
+assert.match(fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8'), /^COPY package\.json README\.md LICENSE LICENSING\.md \.\/$/m, 'Docker 镜像必须随附许可证及采用声明');
 console.log('desktop client tests passed');

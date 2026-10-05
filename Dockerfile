@@ -7,7 +7,7 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-COPY package.json README.md LICENSE ./
+COPY package.json README.md LICENSE LICENSING.md ./
 COPY src ./src
 COPY public ./public
 COPY wiki ./wiki

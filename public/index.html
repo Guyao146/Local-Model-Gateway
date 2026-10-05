@@ -53,7 +53,7 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="about"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>关于我们</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.4.0</strong></div>
+        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.5.0</strong></div>
       </aside>
 
       <div class="content">
@@ -168,38 +168,71 @@
         <p class="help">导出文件包含本地 Key、上游 API Key 和旧版兼容字段，请只保存到安全位置。导入默认保留本机当前凭据。</p>
       </section>
 
-          <section class="panel endpoint-panel dashboard-card" data-panel-id="about" data-tab-page="about">
+          <section class="panel about-panel dashboard-card" data-panel-id="about" data-tab-page="about" aria-labelledby="aboutHeading">
         <div class="panel-heading">
-          <div><h2>关于我们</h2></div>
+          <div><h2 id="aboutHeading">关于我们</h2></div>
+          <span class="about-caption">项目 · 许可 · 支持</span>
+        </div>
+        <div class="about-hero">
+          <div class="about-brand">
+            <span class="about-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><mask id="sakuraMarkAbout"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="11.8" r="2.1" fill="#000"/></mask><g fill="currentColor" mask="url(#sakuraMarkAbout)"><circle cx="12" cy="6.5" r="4.1"/><circle cx="6.77" cy="10.3" r="4.1"/><circle cx="8.77" cy="16.45" r="4.1"/><circle cx="15.23" cy="16.45" r="4.1"/><circle cx="17.23" cy="10.3" r="4.1"/></g></svg></span>
+            <div class="about-brand-copy">
+              <p class="about-kicker">LOCAL MODEL GATEWAY</p>
+              <h3>让模型连接更简单。</h3>
+            </div>
+          </div>
+          <p class="about-intro">一个轻量的本地模型聚合网关。将多个上游服务连接到统一入口，让模型路由、访问控制与用量统计，都在一处有序管理。</p>
+          <ul class="about-badges" aria-label="项目特性">
+            <li class="about-version">当前版本 <code id="aboutVersion">读取中…</code></li>
+            <li>网关零第三方依赖</li>
+            <li>OpenAI / Anthropic / Responses</li>
+          </ul>
+          <nav class="about-actions" aria-label="项目资源">
+            <a class="button primary" href="https://github.com/Guyao146/Local-Model-Gateway" target="_blank" rel="noopener noreferrer">查看源码 <span aria-hidden="true">↗</span></a>
+            <a class="button secondary" href="https://wiki.mcylyr.cn/#/docs/local-model-gateway" target="_blank" rel="noopener noreferrer">使用文档 <span aria-hidden="true">↗</span></a>
+            <a class="button secondary" href="https://github.com/Guyao146/Local-Model-Gateway/issues" target="_blank" rel="noopener noreferrer">问题反馈 <span aria-hidden="true">↗</span></a>
+          </nav>
         </div>
         <div class="about-grid">
-          <article class="about-card">
-            <h3>项目</h3>
-            <p>Local Model Gateway 是一个运行在本机的轻量模型聚合网关，零 npm 依赖，把 OpenAI / Anthropic / Responses 请求转发到多个可配置的上游站点，并提供路由分流、熔断降级、限流和用量统计。</p>
+          <article class="about-card about-license" aria-labelledby="aboutLicenseHeading">
+            <span class="about-kicker">LICENSE</span>
+            <h3 id="aboutLicenseHeading">Sakura-License v1.2</h3>
+            <p>源码可用，尊重创作与分享。以下是许可要点，具体权利与义务以正文和采用声明为准。</p>
+            <ul class="about-principles">
+              <li><strong>保留来源与署名</strong><span>分发时保留适用的版权、许可与来源声明。</span></li>
+              <li><strong>同许可共享受覆盖作品</strong><span>对外分发或提供服务时，按许可要求提供对应源码并以相同许可共享。</span></li>
+              <li><strong>特定商用需书面授权</strong><span>开展许可定义的商业利用前，须取得明确书面授权。</span></li>
+            </ul>
+            <div class="about-license-links">
+              <a class="about-link" href="https://github.com/Guyao146/Local-Model-Gateway/blob/main/LICENSE" target="_blank" rel="noopener noreferrer"><span>阅读许可正文</span><span aria-hidden="true">↗</span></a>
+              <a class="about-link" href="https://github.com/Guyao146/Local-Model-Gateway/blob/main/LICENSING.md" target="_blank" rel="noopener noreferrer"><span>查看采用声明</span><span aria-hidden="true">↗</span></a>
+            </div>
+            <p class="about-license-note">本许可不是 OSI 批准的开源许可证。v2.4.0 及之前的历史发布版本仍按 LGPL-2.1 授权，已合法取得的权利不受影响。</p>
+          </article>
+          <article class="about-card" aria-labelledby="aboutMaintainerHeading">
+            <span class="about-kicker">MAINTAINER</span>
+            <h3 id="aboutMaintainerHeading">维护者与生态</h3>
+            <p>由 Guyao146 维护，属于樱落生态。欢迎通过项目仓库反馈问题、交流使用体验。</p>
             <dl class="about-list">
-              <div><dt>当前版本</dt><dd><code id="aboutVersion">读取中…</code></dd></div>
-              <div><dt>源码仓库</dt><dd><a href="https://github.com/Guyao146/Local-Model-Gateway" target="_blank" rel="noopener noreferrer">github.com/Guyao146/Local-Model-Gateway</a></dd></div>
-              <div><dt>问题反馈</dt><dd><a href="https://github.com/Guyao146/Local-Model-Gateway/issues" target="_blank" rel="noopener noreferrer">GitHub Issues</a></dd></div>
+              <div><dt>维护者</dt><dd><a href="https://github.com/Guyao146" target="_blank" rel="noopener noreferrer">Guyao146 <span aria-hidden="true">↗</span></a></dd></div>
+              <div><dt>生态文档</dt><dd><a href="https://wiki.mcylyr.cn/" target="_blank" rel="noopener noreferrer">樱落生态 Wiki <span aria-hidden="true">↗</span></a></dd></div>
             </dl>
           </article>
-          <article class="about-card">
-            <h3>许可证</h3>
-            <p>本项目采用 <strong>Sakura-License v1.2</strong>：源码可用，受覆盖衍生作品须共享并保留署名，特定商业利用需事先取得书面授权；它不是 OSI 批准的开源许可证。</p>
+          <article class="about-card" aria-labelledby="aboutCreditsHeading">
+            <span class="about-kicker">ACKNOWLEDGEMENTS</span>
+            <h3 id="aboutCreditsHeading">感谢第三方创作者</h3>
+            <p>网关服务无需第三方运行时包。随仓库提供的文档阅读器使用以下组件，其原许可继续保留。</p>
             <dl class="about-list">
-              <div><dt>许可正文</dt><dd><a href="https://github.com/Guyao146/Local-Model-Gateway/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">LICENSE（Sakura-License v1.2）</a></dd></div>
-              <div><dt>采用声明</dt><dd><a href="https://github.com/Guyao146/Local-Model-Gateway/blob/main/LICENSING.md" target="_blank" rel="noopener noreferrer">LICENSING.md</a></dd></div>
-              <div><dt>历史版本</dt><dd>v2.4.0 及之前按 LGPL-2.1 授权</dd></div>
-            </dl>
-          </article>
-          <article class="about-card">
-            <h3>第三方组件</h3>
-            <p>网关服务零运行时第三方依赖。仓库自带文档阅读器使用：</p>
-            <dl class="about-list">
-              <div><dt>marked</dt><dd><a href="https://github.com/markedjs/marked" target="_blank" rel="noopener noreferrer">marked v12.0.2</a>（MIT，作者 Christopher Jeffrey）</dd></div>
+              <div><dt>组件</dt><dd><a href="https://github.com/markedjs/marked" target="_blank" rel="noopener noreferrer">marked v12.0.2 <span aria-hidden="true">↗</span></a></dd></div>
+              <div><dt>作者</dt><dd>Christopher Jeffrey</dd></div>
+              <div><dt>许可</dt><dd>MIT</dd></div>
             </dl>
           </article>
         </div>
-        <p class="help">本作品按「现状」提供，不保证适销性、特定用途适用性、持续可用或不侵权；完整免责与责任限制见许可正文第 13 条。商用授权与法律通知请通过 GitHub Issues 联系。</p>
+        <details class="about-notice">
+          <summary>使用与授权说明</summary>
+          <p>本作品按「现状」提供，不保证适销性、特定用途适用性、持续可用或不侵权；依法不得免责的责任不受影响，完整免责与责任限制见许可正文第 13 条。商业授权与法律事项可先通过 GitHub Issues 询问私密联系渠道，请勿公开提交凭据、合同或个人信息；提出申请不等于取得授权。</p>
+        </details>
       </section>
 
           <section class="panel endpoint-panel dashboard-card" data-panel-id="endpoints" data-tab-page="overview">

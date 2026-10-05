@@ -80,11 +80,20 @@ async function main() {
     const viewport = (width) => cdp('Emulation.setDeviceMetricsOverride', { width, height: 960, deviceScaleFactor: 1, mobile: width < 700 });
     const motion = (value) => cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value }] });
     const style = (selector, property) => evaluate(`getComputedStyle(document.querySelector(${JSON.stringify(selector)}))[${JSON.stringify(property)}]`);
-    const screenshot = async (name) => {
+    const pressKey = async (key, code, windowsVirtualKeyCode) => {
+      // Chrome needs the carriage return to trigger native Enter activation.
+      await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode, ...(key === 'Enter' ? { text: '\r' } : {}) });
+      await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
+    };
+    const screenshot = async (name, selector) => {
       if (!process.env.GATEWAY_UI_SCREENSHOTS) return;
       const directory = path.resolve(process.env.GATEWAY_UI_SCREENSHOTS);
       fs.mkdirSync(directory, { recursive: true });
-      const image = await cdp('Page.captureScreenshot', { format: 'png' });
+      const clip = selector ? await evaluate(`(() => {
+        const rect = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+        return { x: rect.left + scrollX, y: rect.top + scrollY, width: rect.width, height: rect.height, scale: 1 };
+      })()`) : undefined;
+      const image = await cdp('Page.captureScreenshot', { format: 'png', ...(clip ? { clip, captureBeyondViewport: true } : {}) });
       fs.writeFileSync(path.join(directory, `${name}.png`), Buffer.from(image.data, 'base64'));
     };
 
@@ -107,7 +116,49 @@ async function main() {
     await evaluate('switchTab("about")');
     await waitFor(settled);
     assert.equal(await evaluate('/^v?\\d+\\.\\d+\\.\\d+$/.test(document.querySelector("#aboutVersion").textContent)'), true, '关于页应显示当前版本');
-    assert.equal(await evaluate('Boolean(document.querySelector(\'[data-tab-page="about"] a[href*="/blob/main/LICENSE"]\'))'), true, '关于页应提供许可正文入口');
+    const packageVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+    assert.equal(await evaluate('document.querySelector("#aboutVersion").textContent.replace(/^v/, "")'), packageVersion);
+    assert.equal(await evaluate('document.querySelectorAll("#aboutVersion").length'), 1);
+    const aboutLinks = await evaluate('[...document.querySelectorAll(".about-panel a")].map(link => ({href:link.href, target:link.target, rel:link.rel}))');
+    const repository = 'https://github.com/Guyao146/Local-Model-Gateway';
+    for (const href of [repository, `${repository}/issues`, `${repository}/blob/main/LICENSE`, `${repository}/blob/main/LICENSING.md`, 'https://wiki.mcylyr.cn/#/docs/local-model-gateway', 'https://github.com/markedjs/marked']) {
+      assert(aboutLinks.some(link => link.href === href), `关于页应保留资源入口: ${href}`);
+    }
+    assert(aboutLinks.every(link => link.href.startsWith('https://') && link.target === '_blank' && link.rel.split(/\s+/).includes('noopener') && link.rel.split(/\s+/).includes('noreferrer')), '外链应安全地在新标签页打开');
+    const licenseText = await evaluate('document.querySelector(".about-license").textContent');
+    assert.match(licenseText, /Sakura-License v1\.2/);
+    assert.match(licenseText, /不是 OSI 批准的开源许可证/);
+    assert.match(licenseText, /v2\.4\.0 及之前.*LGPL-2\.1/);
+    const credits = await evaluate('document.querySelector("[aria-labelledby=aboutCreditsHeading]").textContent');
+    for (const text of ['marked v12.0.2', 'Christopher Jeffrey', 'MIT']) assert(credits.includes(text));
+    assert.equal(await evaluate('document.querySelector(".about-notice").open'), false);
+    await evaluate('document.querySelector(".about-actions a").focus()');
+    for (let index = 1; index < aboutLinks.length; index += 1) {
+      await pressKey('Tab', 'Tab', 9);
+      assert.equal(await evaluate('document.activeElement.href'), aboutLinks[index].href, '关于页链接应可按顺序使用键盘访问');
+      assert.equal(await evaluate('getComputedStyle(document.activeElement).outlineStyle'), 'solid');
+    }
+    await pressKey('Tab', 'Tab', 9);
+    assert.equal(await evaluate('document.activeElement.matches(".about-notice summary")'), true);
+    assert.equal(await evaluate('getComputedStyle(document.activeElement).outlineStyle'), 'solid');
+    await pressKey('Enter', 'Enter', 13);
+    assert.equal(await evaluate('document.querySelector(".about-notice").open'), true, '键盘应能展开授权说明');
+    await pressKey('Enter', 'Enter', 13);
+    assert.equal(await evaluate('document.querySelector(".about-notice").open'), false);
+    await evaluate('document.activeElement.blur(); window.scrollTo(0, 0)');
+    for (const width of [1440, 1101, 1100, 1024, 768, 701, 700, 390, 320]) {
+      await viewport(width);
+      await waitFor(settled);
+      assert.equal((await style('.about-grid', 'gridTemplateColumns')).split(' ').length, width > 1100 ? 2 : 1, `${width}px 关于页卡片列数`);
+      assert.equal(await style('.about-mark', 'width'), width <= 700 ? '44px' : '64px', `${width}px 品牌图标应适配断点`);
+      for (const open of [true, false]) {
+        await evaluate(`document.querySelector('.about-notice').open = ${open}`);
+        assert.equal(await evaluate(noOverflow), true, `${width}px 关于页${open ? '展开' : '折叠'}说明不应横向溢出`);
+        assert.equal(await evaluate('[...document.querySelectorAll(".about-hero, .about-card, .about-notice, .about-panel a")].every(element => element.scrollWidth <= element.clientWidth + 1)'), true, `${width}px 关于页内容不应溢出卡片或链接`);
+      }
+      if ([1440, 701, 700, 390, 320].includes(width)) await screenshot(`about-${width}`, '.about-panel');
+    }
+    await viewport(1440);
     await evaluate('switchTab("metrics")');
     await waitFor(settled);
     await evaluate('refreshMetrics()');
@@ -149,6 +200,10 @@ async function main() {
     await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
     await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
     assert.equal(await evaluate('getComputedStyle(document.activeElement).outlineStyle'), 'solid', '键盘焦点应可见');
+    await evaluate('switchTab("about")');
+    assert.equal(await style('.about-panel', 'animationName'), 'none');
+    assert.equal(await style('.about-actions .button', 'transitionDuration'), '0s');
+    assert.equal(await evaluate('document.querySelector(".about-panel").getAnimations({subtree:true}).length'), 0, '关于页应尊重减少动态效果偏好');
 
     // Mock only the session response so localhost can display the login page.
     await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `
@@ -183,7 +238,7 @@ async function main() {
     assert.equal(await style('#passwordLoginForm', 'display'), 'none');
     assert.equal(await style('#loginActions', 'display'), 'grid');
     assert.deepEqual(exceptions, [], '浏览器不应出现未处理异常');
-    console.log('UI browser tests passed (navigation, dialogs, responsive layout, login, reduced motion)');
+    console.log('UI browser tests passed (navigation, about page, dialogs, responsive layout, login, reduced motion)');
   } finally {
     for (const task of pending.values()) clearTimeout(task.timer);
     socket?.close();
