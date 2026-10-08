@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 
 const projectRoot = path.join(__dirname, '..');
 const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'local-model-gateway-responses-native-'));
@@ -420,6 +421,35 @@ async function main() {
       method: 'POST', headers: localHeaders,
       body: JSON.stringify({ model: 'chat-native', stream: true, messages: [{ role: 'user', content: 'tools' }] })
     });
+    const nativeMulti = await request(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: 'POST', headers: localHeaders,
+      body: JSON.stringify({ model: 'chat-native', stream: true, input: 'tools' })
+    });
+    const nativeEvents = parseSse(nativeMulti.body).map((event) => event.json);
+    const nativeItems = nativeEvents.find((event) => event.type === 'response.completed').response.output;
+    assert.notEqual(nativeItems[0].id, nativeItems[1].id);
+    for (const event of nativeEvents) {
+      if (event.type === 'response.function_call_arguments.delta') {
+        assert.equal(event.item_id, nativeItems[event.output_index ?? 0].id, '原生流必须关联到同一个工具项');
+      }
+      if (event.type === 'response.output_item.added' || event.type === 'response.output_item.done') {
+        assert.equal(event.item.id, nativeItems[event.output_index].id);
+        assert.equal(event.item.call_id, nativeItems[event.output_index].call_id);
+      }
+    }
+    customFrames.at(-1).response.usage = { input_tokens: 13, output_tokens: 7, total_tokens: 20 };
+    customFrames.push({ type: 'error', error: { message: 'ignored-after-completed', type: 'server_error' } });
+    const terminalNative = await request(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: 'POST', headers: { ...localHeaders, 'x-request-id': 'native-terminal-tail' },
+      body: JSON.stringify({ model: 'chat-native', stream: true, input: 'tools' })
+    });
+    assert.doesNotMatch(terminalNative.body, /ignored-after-completed/);
+    assert.equal(parseSse(terminalNative.body).at(-1).json.type, 'response.completed');
+    const convertedUsage = await request(`http://127.0.0.1:${gatewayPort}/v1/messages`, {
+      method: 'POST', headers: localHeaders,
+      body: JSON.stringify({ model: 'chat-native', stream: true, messages: [], max_tokens: 32 })
+    });
+    assert.deepEqual(parseSse(convertedUsage.body).find((event) => event.name === 'message_delta').json.usage, { input_tokens: 13, output_tokens: 7 });
     customFrames = null;
     const assembled = new Map();
     for (const line of multi.body.split('\n').filter((line) => line.startsWith('data: {'))) {
@@ -613,7 +643,12 @@ async function main() {
   } catch (error) {
     throw new Error(`${error.message}\n${stderr}`);
   } finally {
-    gateway.kill();
+    if (gateway.exitCode === null && gateway.signalCode === null) {
+      const exited = once(gateway, 'exit');
+      gateway.kill();
+      await exited;
+    }
+    upstream.closeAllConnections();
     await new Promise((resolve) => upstream.close(resolve));
     fs.rmSync(dataDirectory, { recursive: true, force: true });
   }

@@ -85,4 +85,30 @@ assert.deepEqual(messageEvents.filter((event) => event.type === 'content_block_s
 assert.deepEqual(messageEvents.filter((event) => event.type === 'content_block_stop').map((event) => event.index), [0, 1, 2]);
 assert.equal(messageEvents.at(-1).type, 'message_stop');
 assert.equal(messageEvents.filter((event) => event.index === 1 && event.delta).map((event) => event.delta.partial_json).join(''), '{}');
+// message_delta 的 usage 是整条消息的累计值，末帧必须补回首帧未知的输入 Token。
+for (const placement of ['early', 'late', 'split']) {
+  const usageEvents = [];
+  const usageStream = createAnthropicStream((data) => usageEvents.push(structuredClone(data)), 'usage-model');
+  usageStream.chunk({ choices: [{ delta: { content: 'first' } }], ...(placement === 'early' ? { usage: { prompt_tokens: 123 } } : {}) });
+  assert.equal(usageEvents[0].type, 'message_start', '不能为了等待用量而缓存整段流');
+  assert.equal(usageEvents[0].message.usage.input_tokens, placement === 'early' ? 123 : 0);
+  if (placement === 'split') usageStream.chunk({ choices: [], usage: { prompt_tokens: 123 } });
+  usageStream.chunk({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { completion_tokens: 7, ...(placement === 'late' ? { prompt_tokens: 123 } : {}) } });
+  const usage = usageStream.finish();
+  assert.deepEqual(usageEvents.find((event) => event.type === 'message_delta').usage, { input_tokens: 123, output_tokens: 7 });
+  assert.equal(usage.prompt_tokens, 123);
+  assert.equal(usage.completion_tokens, 7);
+}
+// 释放取消的恢复探测后应立即允许下一次探测，而不是再冷却或永久锁死。
+health.failure(acquire('cancelled'), 'capability', 1, 1000);
+time += 1000;
+const cancelledProbe = acquire('cancelled');
+assert.equal(cancelledProbe.probe, true);
+health.release(cancelledProbe);
+const replacementProbe = acquire('cancelled');
+assert.ok(replacementProbe);
+health.release(cancelledProbe);
+assert.equal(acquire('cancelled'), null, '重复释放旧探测不能释放新探测');
+health.success(replacementProbe);
+assert.equal(acquire('cancelled').probe, false);
 console.log('endpoint routing and stream conversion tests passed');

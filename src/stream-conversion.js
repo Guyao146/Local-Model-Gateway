@@ -26,7 +26,7 @@ function createResponsesStream(write, model) {
   return {
     chunk(parsed) {
       start();
-      if (parsed.usage) usage = parsed.usage;
+      if (parsed.usage) usage = { ...usage, ...parsed.usage };
       const choice = parsed.choices?.[0] || {};
       const delta = choice.delta || {};
       if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -99,7 +99,7 @@ function createAnthropicStream(write, model) {
   };
   return {
     chunk(parsed) {
-      if (parsed.usage) usage = parsed.usage;
+      if (parsed.usage) usage = { ...usage, ...parsed.usage };
       if (!started) {
         started = true;
         emit('message_start', { message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null,
@@ -124,7 +124,9 @@ function createAnthropicStream(write, model) {
     finish() {
       if (!started) this.chunk({});
       for (const index of blocks) emit('content_block_stop', { index });
-      emit('message_delta', { delta: { stop_reason: finishReason === 'length' ? 'max_tokens' : finishReason === 'tool_calls' ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: usage.completion_tokens || 0 } });
+      // Chat/Responses 常到末帧才给输入用量；message_delta 允许补充累计 input_tokens，
+      // 不需要为了等待用量而延迟 message_start 或缓存整段输出。
+      emit('message_delta', { delta: { stop_reason: finishReason === 'length' ? 'max_tokens' : finishReason === 'tool_calls' ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 } });
       emit('message_stop');
       return usage;
     }

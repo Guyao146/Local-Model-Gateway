@@ -629,20 +629,46 @@ function responseId(value, fallback) {
   return fallback;
 }
 
+// 一个输出项可能先收到参数增量，再收到 added。按 output_index 缓存已经发出的 ID，
+// 上游 ID 别名单独保存，避免数字 ID 与 output_index 冲突；后续事件不能另造一个 ID。
+function responsesItemId(value, outputIndex, state, alias) {
+  const rawId = responseId(value, '');
+  const aliasId = responseId(alias, '');
+  const indexKey = outputIndex === undefined || outputIndex === null ? undefined : String(outputIndex);
+  const cached = indexKey === undefined ? undefined : state?.itemIds?.[indexKey];
+  const itemId = cached || state?.itemAliases?.get(rawId) || state?.itemAliases?.get(aliasId)
+    || rawId || aliasId || `item_${indexKey ?? 'unknown'}_${crypto.randomBytes(6).toString('hex')}`;
+  if (state) {
+    state.itemAliases = state.itemAliases || new Map();
+    for (const id of [rawId, aliasId, itemId]) if (id) state.itemAliases.set(id, itemId);
+    if (indexKey !== undefined) {
+      state.itemIds = state.itemIds || Object.create(null);
+      state.itemIds[indexKey] = itemId;
+    }
+  }
+  return itemId;
+}
+
+function normalizeResponsesItem(item, outputIndex, state, alias) {
+  if (!item || typeof item !== 'object') return item;
+  const id = responsesItemId(item.id, outputIndex, state, alias);
+  const result = { ...item, id };
+  if (item.call_id !== undefined || item.type === 'function_call') {
+    result.call_id = state?.itemCallIds?.get(id) || responseId(item.call_id, id);
+    if (state) {
+      state.itemCallIds = state.itemCallIds || new Map();
+      state.itemCallIds.set(id, result.call_id);
+    }
+  }
+  return result;
+}
+
 function normalizeResponsesResponse(input, model, state) {
   const source = input && typeof input === 'object' ? input : {};
   const result = { ...source, model: model || source.model };
-  result.id = responseId(source.id, `resp_${crypto.randomBytes(8).toString('hex')}`);
+  result.id = responseId(source.id, state?.responseId || `resp_${crypto.randomBytes(8).toString('hex')}`);
   if (Array.isArray(source.output)) {
-    result.output = source.output.map((item, index) => {
-      if (!item || typeof item !== 'object') return item;
-      const itemId = responseId(item.id, state?.itemIds?.[String(index)] || `item_${index}_${crypto.randomBytes(6).toString('hex')}`);
-      const normalized = { ...item, id: itemId };
-      if (item.call_id !== undefined || item.type === 'function_call') {
-        normalized.call_id = responseId(item.call_id, itemId);
-      }
-      return normalized;
-    });
+    result.output = source.output.map((item, index) => normalizeResponsesItem(item, index, state));
   }
   return normalizeResponsesIds(result, state);
 }
@@ -653,12 +679,21 @@ function isJsonSchemaField(key) {
   return ['parameters', 'input_schema', 'schema', 'json_schema'].includes(key);
 }
 
+// 除 schema 外，工具参数/结果及 metadata 也是不透明业务数据。按父节点区分，
+// 不能直接跳过所有 input/output：Responses 根对象的这两个字段仍包含协议 ID。
+function isOpaqueIdField(parent, key) {
+  if (isJsonSchemaField(key) || key === 'arguments' || key === 'metadata') return true;
+  if (key === 'input') return ['tool_use', 'server_tool_use', 'custom_tool_call'].includes(parent.type);
+  if (key === 'output') return ['function_call_output', 'custom_tool_call_output'].includes(parent.type);
+  return key === 'content' && parent.type === 'tool_result';
+}
+
 function normalizeResponsesIds(value, state = {}, path = 'responses') {
   if (Array.isArray(value)) return value.map((item, index) => normalizeResponsesIds(item, state, `${path}.${index}`));
   if (!value || typeof value !== 'object') return value;
   const result = {};
   for (const [key, item] of Object.entries(value)) {
-    if (isJsonSchemaField(key)) {
+    if (isOpaqueIdField(value, key)) {
       result[key] = item;
     } else if (key === 'previous_response_id' && item === null) {
       result[key] = null;
@@ -685,19 +720,11 @@ function normalizeResponsesEvent(input, state = {}) {
   if (result.response_id) state.responseId = result.response_id;
 
   if (source.item && typeof source.item === 'object') {
-    const key = source.output_index ?? source.item_id ?? state.nextItemIndex ?? 0;
-    const itemKey = String(key);
-    const itemId = responseId(source.item.id, state.itemIds?.[itemKey] || `item_${itemKey}_${crypto.randomBytes(6).toString('hex')}`);
-    state.itemIds = state.itemIds || {};
-    state.itemIds[itemKey] = itemId;
-    result.item = { ...source.item, id: itemId };
-    if (source.item.call_id !== undefined || source.item.type === 'function_call') result.item.call_id = responseId(source.item.call_id, itemId);
+    const index = source.output_index ?? (responseId(source.item.id, '') || responseId(source.item_id, '') ? undefined : 0);
+    result.item = normalizeResponsesItem(source.item, index, state, source.item_id);
   }
-  if (source.item_id !== undefined) {
-    const key = String(source.item_id);
-    result.item_id = responseId(source.item_id, state.itemIds?.[key] || `item_${key}`);
-  } else if (source.output_index !== undefined && state.itemIds?.[String(source.output_index)]) {
-    result.item_id = state.itemIds[String(source.output_index)];
+  if (source.item_id !== undefined || source.output_index !== undefined) {
+    result.item_id = responsesItemId(source.item_id, source.output_index, state, source.item?.id);
   }
   if (source.type === 'response.completed' || source.type === 'response.incomplete') {
     result.response = normalizeResponsesResponse(source.response, source.response?.model || undefined, state);
@@ -739,6 +766,7 @@ module.exports = {
   textFromContent,
   responseId,
   isJsonSchemaField,
+  isOpaqueIdField,
   responseRequestRequiresNative,
   chatRequestRequiresNative
 };

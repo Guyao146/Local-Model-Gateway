@@ -141,6 +141,64 @@ function main() {
     }
   }
 
+  // 工具参数是业务数据，即使包含与协议同名的 ID 也必须原样保留。
+  const toolInput = { id: 123, record: { id: { tenant: 'acme', key: 7 }, call_id: null }, rows: [{ item_id: false }] };
+  for (const type of ['tool_use', 'server_tool_use']) {
+    const toolPayload = { id: 456, content: [{ type, id: 789, name: 'lookup', input: structuredClone(toolInput) }] };
+    const toolBad = [];
+    scanIds(toolPayload, '$', toolBad);
+    assert.deepEqual(toolBad.map((item) => item.path), ['$.id', '$.content[0].id']);
+    normalizeIdsInPlace(toolPayload);
+    assert.equal(toolPayload.id, '456');
+    assert.equal(toolPayload.content[0].id, '789');
+    assert.deepEqual(toolPayload.content[0].input, toolInput);
+    const toolRes = fakeResponse();
+    const toolDiag = createDiagnostics();
+    attachOutputCapture(toolRes, toolDiag);
+    const toolFrame = `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: toolPayload.content[0] })}\n\n`;
+    toolRes.write(toolFrame);
+    toolRes.end();
+    assert.equal(toolRes.__written.join(''), toolFrame);
+    assert.deepEqual(toolDiag.warnings, [], '工具参数中的 ID 不能触发误修正告警');
+  }
+
+  // end(data) 必须只发送一次修正后的末帧，并保留回调、编码及 SSE 元信息。
+  for (const id of ['final', 123, null]) {
+    for (const binary of [false, true]) {
+      const endRes = fakeResponse();
+      const endDiag = createDiagnostics();
+      const originalEnd = endRes.end;
+      let endArgs;
+      endRes.end = (...args) => { endArgs = args; originalEnd(args[0]); return endRes; };
+      attachOutputCapture(endRes, endDiag);
+      const endFrame = `: keep\r\nid: last\r\nretry: 1000\r\nevent: message_start\r\ndata: ${JSON.stringify({ message: { id } })}\r\n\r\n`;
+      const callback = () => {};
+      assert.equal(endRes.end(binary ? Buffer.from(endFrame) : endFrame, 'utf8', callback), endRes);
+      const endOutput = endRes.__written.join('');
+      const data = endOutput.split(/\r?\n/).filter((line) => line.startsWith('data:'));
+      assert.equal(data.length, 1, 'end(data) 不能把原始末帧重复发送');
+      assert.equal(typeof JSON.parse(data[0].slice(5)).message.id, 'string');
+      assert.ok(endOutput.startsWith(': keep\r\nid: last\r\nretry: 1000\r\nevent: message_start\r\n'));
+      assert.equal(endArgs[0], undefined);
+      assert.equal(endArgs[1], 'utf8');
+      assert.equal(endArgs[2], callback);
+      if (typeof id === 'string') assert.equal(endOutput, endFrame);
+    }
+  }
+  for (const withNull of [false, true]) {
+    const callbackRes = fakeResponse();
+    let args;
+    callbackRes.end = (...values) => { args = values; };
+    attachOutputCapture(callbackRes, createDiagnostics());
+    callbackRes.write('data: {"id":');
+    callbackRes.write('123}');
+    const callback = () => {};
+    if (withNull) callbackRes.end(null, callback);
+    else callbackRes.end(callback);
+    assert.equal(callbackRes.__written.join(''), 'data: {"id":"123"}');
+    assert.equal(args.at(-1), callback, 'end(callback) 不能被当作 SSE 数据');
+  }
+
   // sample 只保留开头若干帧并做总量截断。
   const list = [];
   for (let index = 0; index < 50; index += 1) sample(list, `frame-${index}-padding`.padEnd(50, 'x'));

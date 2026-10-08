@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 
 const projectRoot = path.join(__dirname, '..');
 const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'local-model-gateway-stream-'));
@@ -65,6 +66,7 @@ function writeSse(res, data, eventName) {
 
 function writeSplitStream(res, fixture) {
   const bytes = Buffer.from(fixture.text);
+  if (fixture.singleChunk) return res.end(bytes);
   const unicodeIndex = bytes.indexOf(Buffer.from('错误'));
   const split = unicodeIndex >= 0 ? unicodeIndex + 1 : Math.max(1, Math.floor(bytes.length / 2));
   res.write(bytes.subarray(0, split));
@@ -192,6 +194,64 @@ async function main() {
     assert.equal(normal.status, 200);
     assert.equal(normal.body, normalRaw);
 
+    // Chat 的末尾 usage-only 帧必须更新 Messages 客户端的输入 Token，而非永远为 0。
+    const lateUsage = 'data: {"id":"late-usage","choices":[{"delta":{"content":"hello"}}]}\n\n'
+      + 'data: {"id":"late-usage","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+      + 'data: {"id":"late-usage","choices":[],"usage":{"prompt_tokens":123,"completion_tokens":7,"total_tokens":130}}\n\n'
+      + 'data: [DONE]\n\n';
+    openAIOverride = { text: lateUsage };
+    const messagesUsage = await request(`http://127.0.0.1:${gatewayPort}/v1/messages`, {
+      method: 'POST', headers: localHeaders,
+      body: JSON.stringify({ model: 'openai-stream-local', stream: true, messages: [], max_tokens: 32 })
+    });
+    openAIOverride = null;
+    assert.equal(messagesUsage.status, 200, messagesUsage.body);
+    const usageEvents = parseSse(messagesUsage.body).filter((event) => event.data).map((event) => JSON.parse(event.data));
+    assert.equal(usageEvents[0].message.usage.input_tokens, 0);
+    assert.deepEqual(usageEvents.find((event) => event.type === 'message_delta').usage, { input_tokens: 123, output_tokens: 7 });
+
+    // Anthropic 的累计 input_tokens 也可能在 message_delta 更新，转换时不能只读 message_start。
+    anthropicOverride = { text: 'event: message_start\ndata: {"type":"message_start","message":{"id":"late-anthropic","usage":{"input_tokens":0}}}\n\n'
+      + 'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":123,"output_tokens":7}}\n\n'
+      + 'event: message_stop\ndata: {"type":"message_stop"}\n\n' };
+    const chatUsage = await request(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: 'POST', headers: localHeaders, body: JSON.stringify({ model: 'anthropic-stream-local', stream: true, messages: [] })
+    });
+    anthropicOverride = null;
+    const usageChunk = parseSse(chatUsage.body).filter((event) => event.data && event.data !== '[DONE]').map((event) => JSON.parse(event.data)).find((chunk) => chunk.usage);
+    assert.deepEqual(usageChunk.usage, { prompt_tokens: 123, completion_tokens: 7, total_tokens: 130 });
+
+    // 终止事件后的错误、用量和重复终止帧必须丢弃（包括同一网络分片内的尾随数据）。
+    const trailingRequests = [];
+    for (const upstreamProtocol of ['openai', 'anthropic']) {
+      const successful = upstreamProtocol === 'openai'
+        ? 'data: {"id":"terminal-chat","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}\n\ndata: [DONE]\n\n'
+        : 'event: message_start\ndata: {"type":"message_start","message":{"id":"terminal-message","usage":{"input_tokens":2}}}\n\nevent: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n';
+      const trailing = 'event: error\ndata: {"type":"error","error":{"message":"trailing-error","type":"overloaded_error"}}\n\n'
+        + 'data: {"usage":{"prompt_tokens":999,"input_tokens":999}}\n\ndata: [DONE]\n\n';
+      const fixture = { text: successful + trailing, singleChunk: true };
+      if (upstreamProtocol === 'openai') openAIOverride = fixture;
+      else anthropicOverride = fixture;
+      const requestId = `terminal-${upstreamProtocol}`;
+      trailingRequests.push(requestId);
+      const result = await request(`http://127.0.0.1:${gatewayPort}/v1/${upstreamProtocol === 'openai' ? 'chat/completions' : 'messages'}`, {
+        method: 'POST', headers: { ...localHeaders, 'x-request-id': requestId },
+        body: JSON.stringify({ model: `${upstreamProtocol}-stream-local`, stream: true, messages: [], max_tokens: 32 })
+      });
+      openAIOverride = null;
+      anthropicOverride = null;
+      assert.equal(result.status, 200, result.body);
+      assert.equal(result.body, successful, '终止帧之前逐字保留，之后不再转发');
+    }
+    const terminalLogs = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/logs?limit=100`, { headers: adminHeaders });
+    for (const requestId of trailingRequests) {
+      const entry = terminalLogs.json.items.find((item) => item.id === requestId);
+      assert.ok(entry);
+      assert.equal(entry.success, true, '已成功结束的请求不能被尾随错误污染');
+      assert.equal(entry.usage.promptTokens, 2);
+      assert.equal(entry.usage.completionTokens, 3);
+    }
+
     const rawMessage = '上游流错误：请稍后重试';
     // 此套件只验证错误编码；冷却/熔断另有专用测试，避免连续错误摘除夹具上游。
     await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
@@ -278,7 +338,13 @@ async function main() {
   } catch (error) {
     throw new Error(`${error.message}\n${stderr}`);
   } finally {
-    gateway.kill();
+    if (gateway.exitCode === null && gateway.signalCode === null) {
+      const exited = once(gateway, 'exit');
+      gateway.kill();
+      await exited;
+    }
+    openAI.closeAllConnections();
+    anthropic.closeAllConnections();
     await Promise.all([
       new Promise((resolve) => openAI.close(resolve)),
       new Promise((resolve) => anthropic.close(resolve))

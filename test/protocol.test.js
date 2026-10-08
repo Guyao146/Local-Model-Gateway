@@ -118,7 +118,7 @@ const deepEventState = {};
 const deepItemEvent = normalizeResponsesEvent({ type: 'response.output_item.added', output_index: 2, item: { type: 'function_call', id: null, call_id: 91, arguments: [{ item_id: null }] } }, deepEventState);
 assert.equal(typeof deepItemEvent.item.id, 'string');
 assert.equal(typeof deepItemEvent.item.call_id, 'string');
-assert.equal(typeof deepItemEvent.item.arguments[0].item_id, 'string');
+assert.deepEqual(deepItemEvent.item.arguments, [{ item_id: null }], '实际参数即使是对象或数组也不能按协议 ID 改写');
 const upstreamRequest = normalizeResponsesIds({
   model: 'gpt-native',
   input: [
@@ -286,4 +286,51 @@ for (const type of ['response.created', 'response.completed', 'response.incomple
   assert.equal(event.response.id, '123');
   assert.equal(event.response.output[0].call_id, '789');
 }
+// 实际工具参数、工具结果和 metadata 不能按协议 ID 改写；根 input/output 仍须遍历。
+const businessData = { id: 123, record: { id: { tenant: 'acme', key: 7 }, call_id: null }, rows: [{ item_id: false }] };
+const businessRequest = { input: [
+  { type: 'function_call', id: 1, call_id: 2, name: 'lookup', arguments: businessData },
+  { type: 'function_call_output', id: 3, call_id: 2, output: businessData },
+  { type: 'message', id: 4, content: [{ type: 'tool_use', id: 5, input: businessData }, { type: 'tool_result', tool_use_id: '5', content: businessData }] }
+], metadata: businessData };
+const normalizedBusiness = normalizeResponsesIds(businessRequest);
+assert.deepEqual(normalizedBusiness, { input: [
+  { ...businessRequest.input[0], id: '1', call_id: '2' },
+  { ...businessRequest.input[1], id: '3', call_id: '2' },
+  { ...businessRequest.input[2], id: '4', content: [{ ...businessRequest.input[2].content[0], id: '5' }, businessRequest.input[2].content[1]] }
+], metadata: businessData });
+assert.equal(businessRequest.input[0].id, 1, '不能就地修改客户端请求');
+
+// 缺失/非法 ID 的并行工具，必须用 output_index 将 added、delta、done 和最终 output 关联。
+for (const missingId of [null, undefined, '', { invalid: true }]) {
+  for (const terminal of ['response.completed', 'response.incomplete']) {
+    const state = {};
+    const created = normalizeResponsesEvent({ type: 'response.created', response: { id: null, output: [] } }, state);
+    const items = [0, 1].map((index) => ({ type: 'function_call', id: missingId, call_id: missingId, name: `tool_${index}`, arguments: '' }));
+    const added = items.map((item, output_index) => normalizeResponsesEvent({ type: 'response.output_item.added', output_index, item }, state));
+    assert.notEqual(added[0].item.id, added[1].item.id);
+    for (const output_index of [1, 0]) {
+      const delta = normalizeResponsesEvent({ type: 'response.function_call_arguments.delta', output_index, item_id: missingId, delta: '{}' }, state);
+      const done = normalizeResponsesEvent({ type: 'response.output_item.done', output_index, item: items[output_index] }, state);
+      assert.equal(delta.item_id, added[output_index].item.id);
+      assert.equal(done.item.id, added[output_index].item.id);
+      assert.equal(done.item.call_id, added[output_index].item.call_id);
+    }
+    const completed = normalizeResponsesEvent({ type: terminal, response: { id: null, output: items } }, state);
+    assert.equal(completed.response.id, created.response.id);
+    assert.deepEqual(completed.response.output.map((item) => item.id), added.map((event) => event.item.id));
+  }
+}
+// 增量先于 added 时同样缓存关联；有效 ID 别名和数字 output_index 不能混用。
+const earlyState = {};
+const earlyDelta = normalizeResponsesEvent({ type: 'response.function_call_arguments.delta', output_index: 0, item_id: null, delta: '{' }, earlyState);
+const earlyAdded = normalizeResponsesEvent({ type: 'response.output_item.added', output_index: 0, item: { type: 'function_call', id: 'fc_late', call_id: 'call_late' } }, earlyState);
+const aliasDelta = normalizeResponsesEvent({ type: 'response.function_call_arguments.delta', item_id: 'fc_late', delta: '}' }, earlyState);
+assert.equal(earlyAdded.item.id, earlyDelta.item_id);
+assert.equal(aliasDelta.item_id, earlyDelta.item_id);
+const otherAdded = normalizeResponsesEvent({ type: 'response.output_item.added', output_index: 1, item: { type: 'function_call', id: 0, call_id: 0 } }, earlyState);
+assert.equal(otherAdded.item.id, '0');
+const otherDelta = normalizeResponsesEvent({ type: 'response.function_call_arguments.delta', item_id: 0, delta: '{}' }, earlyState);
+assert.equal(otherDelta.item_id, otherAdded.item.id);
+assert.notEqual(otherDelta.item_id, earlyDelta.item_id);
 console.log('protocol tests passed');

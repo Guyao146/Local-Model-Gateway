@@ -203,6 +203,44 @@ async function main() {
     handler = (req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.flushHeaders(); };
     assert.equal((await chat()).status, 502, 'timeout must include response body, not only headers');
     assert.equal(hits.length, 1);
+    // 取消冷却后的恢复探测：分别覆盖收到响应头前、读取 JSON 正文期间。
+    await settings({ upstreamTimeoutMs: 5000, upstreamRetries: 0, circuitBreakerCooldownMs: 1000 });
+    for (const stage of ['headers', 'body']) {
+      await reset();
+      handler = (req, res) => json(res, 404, { error: { code: 'unsupported_endpoint', message: 'endpoint not found' } });
+      assert.equal((await chat({ model: 'locked' })).status, 404);
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      let held;
+      handler = (req, res) => {
+        held = res;
+        if (stage === 'body') { res.writeHead(200, { 'content-type': 'application/json' }); res.flushHeaders(); }
+      };
+      const controller = new AbortController();
+      const requestId = `cancel-probe-${stage}`;
+      const cancelled = fetch(base + '/v1/chat/completions', {
+        method: 'POST', headers: { ...headers, 'content-type': 'application/json', 'x-request-id': requestId },
+        body: JSON.stringify({ model: 'locked', messages: [] }), signal: controller.signal
+      }).then((response) => response.text()).then(() => null, (error) => error);
+      try {
+        for (let index = 0; index < 100 && !held; index += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+        assert.ok(held, '恢复探测必须已到达上游');
+        controller.abort();
+        assert.equal((await cancelled).name, 'AbortError');
+        const cancellationLogged = () => output.split('\n').some((line) => line.includes('client cancelled') && line.includes(requestId));
+        for (let index = 0; index < 100 && !cancellationLogged(); index += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+        assert.ok(cancellationLogged(), '应等待网关完成取消清理');
+        assert.equal(hits.length, 2, '取消后不能重试或切换接口');
+        handler = ok;
+        const recovered = await chat({ model: 'locked' });
+        assert.equal(recovered.status, 200, '取消的探测不能让已恢复接口一直返回 endpoint_cooling_down');
+        assert.equal(hits.length, 3);
+        const logs = await api('/api/admin/metrics/logs?limit=100', undefined, 'GET');
+        assert.ok(!logs.body.items.some((entry) => entry.id === requestId), '取消不是上游失败，不应写入失败统计');
+      } finally {
+        controller.abort();
+        held?.destroy();
+      }
+    }
     console.log('endpoint routing integration tests passed');
   } catch (error) {
     throw new Error(`${error.stack}\n${output}`);

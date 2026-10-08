@@ -1210,6 +1210,7 @@ async function requestWithEndpointFallback({ input, localProtocol, upstream, mod
         // 客户端已取消时不再发起请求，也不把取消计为上游故障。
         if (options.clientSignal?.aborted) {
           response?.cleanup?.();
+          endpointHealth.release(lease);
           return { failure: { status: 499, body: { error: { message: '客户端已取消请求', code: 'client_cancelled' } } }, stop: true };
         }
         response = await fetchUpstream(plan, options.clientSignal);
@@ -1230,8 +1231,9 @@ async function requestWithEndpointFallback({ input, localProtocol, upstream, mod
         kind = classifyEndpointError(response.status, body);
       } catch (error) {
         if (options.clientSignal?.aborted) {
-          // 客户端取消不是上游故障：不冷却接口、不标记上游失败、不记录错误。
+          // 客户端取消不是上游故障：释放恢复探测，不冷却接口、不标记上游失败。
           response?.cleanup?.();
+          endpointHealth.release(lease);
           return { failure: { status: 499, body: { error: { message: '客户端已取消请求', code: 'client_cancelled' } } }, stop: true };
         }
         body = error.upstreamBody || { error: { message: error.name === 'AbortError' ? '上游请求超时' : `无法连接上游：${error.message}` } };
@@ -1293,9 +1295,14 @@ async function fetchWithTimeout(url, options, timeoutMs = 30000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    // 管理接口均读取 JSON：与模型请求相同，计时器由正文消费完成后清理，
+    // 不能在 fetch 收到响应头时就解除超时保护。
+    response.cleanup = () => clearTimeout(timer);
+    return response;
+  } catch (error) {
     clearTimeout(timer);
+    throw error;
   }
 }
 
@@ -1409,7 +1416,7 @@ async function pipeRawStream(response, res, options = {}) {
     buffer += text;
     const parts = buffer.split(/(\r?\n\r?\n)/);
     buffer = parts.pop() || '';
-    for (let index = 0; index < parts.length; index += 2) forwardFrame(parts[index], parts[index + 1]);
+    for (let index = 0; index < parts.length && !terminal; index += 2) forwardFrame(parts[index], parts[index + 1]);
   };
   try {
     while (!terminal) {
@@ -1419,7 +1426,7 @@ async function pipeRawStream(response, res, options = {}) {
     }
     if (!terminal) {
       forwardText(decoder.decode());
-      if (buffer) forwardFrame(buffer);
+      if (!terminal && buffer) forwardFrame(buffer);
     }
     if (!terminal) throw new Error('上游 SSE 提前结束，未收到结束事件');
     res.end();
@@ -1491,7 +1498,8 @@ async function anthropicStreamAsOpenAI(response, res, model, diag) {
     } else if (eventName === 'message_delta') {
       ensureStarted();
       const stop = parsed.delta?.stop_reason;
-      usage.output_tokens = parsed.usage?.output_tokens || usage.output_tokens;
+      usage.input_tokens = parsed.usage?.input_tokens ?? usage.input_tokens;
+      usage.output_tokens = parsed.usage?.output_tokens ?? usage.output_tokens;
       const finish = stop === 'tool_use' ? 'tool_calls' : (stop === 'max_tokens' ? 'length' : (stop ? 'stop' : null));
       if (finish || parsed.usage) {
         writeSse(res, openAIChunk(model, id, {}, finish, parsed.usage ? {
@@ -2211,19 +2219,19 @@ function thinkingProbePlan(upstream, modelId, level) {
 
 async function probeThinkingLevel(upstream, modelId, level, timeoutMs) {
   const plan = thinkingProbePlan(upstream, modelId, level);
-  let response;
   try {
-    response = await fetchWithTimeout(plan.endpoint, {
+    const response = await fetchWithTimeout(plan.endpoint, {
       method: 'POST',
       headers: upstreamHeaders(upstream),
       body: JSON.stringify(plan.body)
     }, timeoutMs);
+    const payload = await readResponseJson(response);
+    const message = errorMessage(payload, `上游返回 HTTP ${response.status}`);
+    return { ...classifyThinkingProbe(response.status, message), status: response.status, message };
   } catch (error) {
+    // 响应正文超时/断开与连接失败一样，不能据此改写模型能力。
     return { kind: 'inconclusive', message: error.name === 'AbortError' ? '探测超时' : error.message };
   }
-  const payload = await readResponseJson(response);
-  const message = errorMessage(payload, `上游返回 HTTP ${response.status}`);
-  return { ...classifyThinkingProbe(response.status, message), status: response.status, message };
 }
 
 async function probeModelThinking(upstream, modelId, timeoutMs) {

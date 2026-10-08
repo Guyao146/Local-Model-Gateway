@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 
 const projectRoot = path.join(__dirname, '..');
 const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'local-model-gateway-output-guard-'));
@@ -56,9 +57,11 @@ function writeSse(res, data, eventName) {
 // 该路径不经任何协议转换，只能靠输出层的兜底归一化救回来——正是客户端报
 // Expected 'id' to be a string. 的典型现场。
 async function main() {
+  let override;
   const upstream = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
+    if (override) return override(req, res, JSON.parse(raw || '{}'));
     if (req.url !== '/v1/chat/completions') {
       res.end(JSON.stringify({ object: 'list', data: [] }));
       return;
@@ -116,10 +119,74 @@ async function main() {
     assert.ok(entry, '应能在请求日志中找到该请求');
     assert.ok(entry.diagnostics, '该请求应携带诊断信息');
     assert.ok((entry.diagnostics.warnings || []).some((message) => message.includes('非字符串 id')), `应记录非字符串 id 的告警，实际：${JSON.stringify(entry.diagnostics.warnings)}`);
+    // 工具参数必须无损：Anthropic 原生和 Chat 转换、JSON 和 SSE 都要覆盖。
+    const toolInput = { id: 123, record: { id: { tenant: 'acme', key: 7 }, call_id: null }, rows: [{ item_id: false }] };
+    override = (req, res, body) => {
+      const native = req.url === '/v1/messages';
+      if (!native && req.url !== '/v1/chat/completions') {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'endpoint not found' } }));
+      }
+      const tool = { type: 'tool_use', id: 789, name: 'lookup', input: toolInput };
+      const call = { id: 789, type: 'function', function: { name: 'lookup', arguments: JSON.stringify(toolInput) } };
+      if (!body.stream) {
+        res.setHeader('Content-Type', 'application/json');
+        return res.end(JSON.stringify(native
+          ? { id: 456, type: 'message', content: [tool], stop_reason: 'tool_use' }
+          : { id: 456, choices: [{ message: { role: 'assistant', tool_calls: [call] }, finish_reason: 'tool_calls' }] }));
+      }
+      res.setHeader('Content-Type', 'text/event-stream');
+      if (native) {
+        writeSse(res, { type: 'message_start', message: { id: 456, content: [], usage: { input_tokens: 1, output_tokens: 0 } } }, 'message_start');
+        writeSse(res, { type: 'content_block_start', index: 0, content_block: tool }, 'content_block_start');
+        writeSse(res, { type: 'content_block_stop', index: 0 }, 'content_block_stop');
+        writeSse(res, { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 1 } }, 'message_delta');
+        writeSse(res, { type: 'message_stop' }, 'message_stop');
+      } else {
+        writeSse(res, { id: 456, choices: [{ delta: { tool_calls: [{ index: 0, ...call }] }, finish_reason: 'tool_calls' }] });
+        writeSse(res, '[DONE]');
+      }
+      res.end();
+    };
+    const anthropic = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
+      method: 'POST', body: JSON.stringify({ name: 'native-anthropic', baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, protocol: 'anthropic', authType: 'none', models: 'guarded-anthropic-model' })
+    });
+    assert.equal(anthropic.status, 201);
+    for (const model of ['guarded-model', 'guarded-anthropic-model']) {
+      for (const stream of [false, true]) {
+        const requestId = `tool-input-${model}-${stream}`;
+        const result = await request(`http://127.0.0.1:${gatewayPort}/v1/messages`, {
+          method: 'POST', headers: { ...localHeaders, 'Content-Type': 'application/json', 'x-request-id': requestId },
+          body: JSON.stringify({ model, stream, max_tokens: 32, messages: [{ role: 'user', content: 'lookup' }] })
+        });
+        assert.equal(result.status, 200, result.body);
+        if (stream) {
+          const events = result.body.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)));
+          const tool = events.find((event) => event.type === 'content_block_start').content_block;
+          assert.equal(tool.id, '789', '真正的协议 ID 仍须规范化');
+          const deltas = events.filter((event) => event.delta?.type === 'input_json_delta').map((event) => event.delta.partial_json).join('');
+          assert.deepEqual(deltas ? JSON.parse(deltas) : tool.input, toolInput);
+        } else {
+          const tool = JSON.parse(result.body).content[0];
+          assert.equal(tool.id, '789');
+          assert.deepEqual(tool.input, toolInput);
+        }
+        const requestLogs = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics/logs?limit=20`);
+        const log = requestLogs.json.items.find((item) => item.id === requestId);
+        assert.ok(log);
+        assert.ok(!log.diagnostics.warnings.some((message) => /\.input\./.test(message)), '不能把工具参数误报为协议 ID');
+      }
+    }
     console.log('output guard integration tests passed');
   } finally {
-    gateway.kill();
-    upstream.close();
+    if (gateway.exitCode === null && gateway.signalCode === null) {
+      const exited = once(gateway, 'exit');
+      gateway.kill();
+      await exited;
+    }
+    upstream.closeAllConnections();
+    await new Promise((resolve) => upstream.close(resolve));
+    fs.rmSync(dataDirectory, { recursive: true, force: true });
     if (stderr) console.error(stderr);
   }
 }

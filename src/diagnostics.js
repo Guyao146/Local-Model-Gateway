@@ -1,5 +1,5 @@
 const { createHash } = require('node:crypto');
-const { responseId, isJsonSchemaField } = require('./protocol');
+const { responseId, isOpaqueIdField } = require('./protocol');
 
 // 客户端（Codex 等严格反序列化的 SDK）要求 id/call_id 等字段必须是字符串。
 // 上游有时返回数字、null 或对象，网关在输出前统一归一化，并把“修过哪里”记进日志。
@@ -60,7 +60,7 @@ function fallbackId(key, path) {
   return `${key}_${createHash('sha256').update(`${path}.${key}`).digest('hex').slice(0, 16)}`;
 }
 
-// 递归找出协议中的非字符串 ID；schema 内的属性定义不属于协议 ID。
+// 递归找出协议中的非字符串 ID；schema 和工具参数等业务数据不属于协议 ID。
 function scanIds(value, path, bad) {
   if (Array.isArray(value)) {
     for (let index = 0; index < value.length; index += 1) scanIds(value[index], `${path}[${index}]`, bad);
@@ -68,7 +68,7 @@ function scanIds(value, path, bad) {
   }
   if (value && typeof value === 'object') {
     for (const [key, item] of Object.entries(value)) {
-      if (isJsonSchemaField(key)) continue;
+      if (isOpaqueIdField(value, key)) continue;
       const childPath = `${path}.${key}`;
       if (isBadIdValue(key, item)) bad.push({ path: childPath, value: item });
       scanIds(item, childPath, bad);
@@ -84,7 +84,7 @@ function normalizeIdsInPlace(value, path = 'root') {
   }
   if (value && typeof value === 'object') {
     for (const key of Object.keys(value)) {
-      if (isJsonSchemaField(key)) continue;
+      if (isOpaqueIdField(value, key)) continue;
       if (isBadIdValue(key, value[key])) {
         value[key] = responseId(value[key], fallbackId(key, path));
       }
@@ -135,11 +135,9 @@ function attachOutputCapture(res, diag) {
 
   const processFrame = (frame) => {
     const lines = frame.split(/\r?\n/);
-    let eventName = '';
     const dataLines = [];
     for (const line of lines) {
-      if (line.startsWith('event:')) eventName = line.slice(6).trim();
-      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+      if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
     }
     if (!dataLines.length) return frame;
     const data = dataLines.join('\n');
@@ -154,7 +152,14 @@ function attachOutputCapture(res, diag) {
     for (const item of bad) {
       warn(diag, `输出帧含非字符串 id：${item.path} = ${JSON.stringify(item.value)}（已自动修正为字符串）`);
     }
-    return `${eventName ? `event: ${eventName}\n` : ''}data: ${JSON.stringify(parsed)}`;
+    // 只替换 data，不能把 SSE 的 id/retry/注释和 CRLF 一起丢掉。
+    let replaced = false;
+    return lines.flatMap((line) => {
+      if (!line.startsWith('data:')) return [line];
+      if (replaced) return [];
+      replaced = true;
+      return [`data: ${JSON.stringify(parsed)}`];
+    }).join(frame.includes('\r\n') ? '\r\n' : '\n');
   };
 
   const processText = (text) => {
@@ -193,14 +198,18 @@ function attachOutputCapture(res, diag) {
   };
 
   res.end = (...args) => {
-    try {
-      if (args.length && args[0] !== undefined && args[0] !== null) {
-        processText(Buffer.isBuffer(args[0]) ? args[0].toString('utf8') : String(args[0]));
+    if (active) {
+      try {
+        // end(callback) 没有数据；已经由 processText 写出的 data 不能再交给 originalEnd。
+        if (args[0] !== undefined && args[0] !== null && typeof args[0] !== 'function') {
+          processText(Buffer.isBuffer(args[0]) ? args[0].toString('utf8') : String(args[0]));
+          args[0] = undefined;
+        }
+        flush();
+      } catch (error) {
+        active = false;
+        warn(diag, `输出采样失败，已退化为透传：${error.message}`);
       }
-      flush();
-    } catch (error) {
-      active = false;
-      warn(diag, `输出采样失败，已退化为透传：${error.message}`);
     }
     try { return originalEnd(...args); } catch (error) { warn(diag, `输出结束失败：${error.message}`); }
   };

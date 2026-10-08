@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 
 // 「拉取思考强度」全链路覆盖：
 // 元数据已声明 → 跳过探测；OpenAI 协议逐档试探 → 只保留上游接受的档位；
@@ -71,7 +72,7 @@ function chatOk(model) {
 // OpenAI 兼容站点：meta-model 由 /v1/models 直接声明档位；probe-model 只接受低/中；
 // none-model 整体拒绝 reasoning_effort；flaky-model 一律 429，且错误文案里带 reasoning。
 function createOpenAIUpstream() {
-  const state = { chat: [], server: null };
+  const state = { chat: [], server: null, timeoutMode: null, timeoutResponses: new Set() };
   state.server = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -91,6 +92,12 @@ function createOpenAIUpstream() {
       // 失败行为只对探测请求生效（探测固定用 max_tokens: 1），真实请求照常成功，
       // 这样既能试探能力，又能验证网关拿到结论后的转发行为。
       const probing = body.max_tokens === 1;
+      if (body.model === 'timeout-model' && probing && state.timeoutMode) {
+        if (state.timeoutMode === 'body') { res.writeHead(429, { 'content-type': 'application/json' }); res.flushHeaders(); }
+        state.timeoutResponses.add(res);
+        res.once('close', () => state.timeoutResponses.delete(res));
+        return;
+      }
       if (body.model === 'probe-model' && effort === 'high' && probing) {
         jsonResponse(res, 400, { error: { message: 'reasoning_effort must be one of: low, medium', type: 'invalid_request_error' } });
         return;
@@ -319,10 +326,51 @@ async function main() {
     assert.equal(importedModels.get('probe-model').thinkingSource, 'probe');
     assert.equal(importedModels.get('none-model').supportsThinking, false);
     assert.equal(importedModels.get('meta-model').thinkingSource, 'metadata', '上游声明同样要保留');
+    // 11) 探测期限覆盖响应头和正文；超时保留旧结论、释放 busy 状态且不污染指标。
+    await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/settings`, {
+      method: 'PUT', body: JSON.stringify({ upstreamTimeoutMs: 1000 })
+    });
+    const timeoutUpstream = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/upstreams`, {
+      method: 'POST', body: JSON.stringify({ name: 'probe-timeout', baseUrl: `http://127.0.0.1:${openaiPort}/v1`, protocol: 'openai', authType: 'none', models: 'timeout-model' })
+    });
+    assert.equal(timeoutUpstream.status, 201);
+    const timeoutUrl = `http://127.0.0.1:${gatewayPort}/api/admin/upstreams/${timeoutUpstream.body.id}/thinking-probe`;
+    const metricsBeforeTimeout = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics`);
+    for (const stage of ['headers', 'body']) {
+      const previousCatalog = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/model-catalog`);
+      const previous = (await catalogModels(previousCatalog, timeoutUpstream.body.id)).get('timeout-model');
+      openai.timeoutMode = stage;
+      const startedAt = Date.now();
+      const timedOut = await requestJson(timeoutUrl, { method: 'POST', body: '{}', signal: AbortSignal.timeout(6000) });
+      assert.equal(timedOut.status, 200, JSON.stringify(timedOut.body));
+      assert.equal(timedOut.body.failed, 1, '正文超时应作为不确定探测结果，而非中断整个管理请求');
+      assert.equal(timedOut.body.probed, 0);
+      assert.equal(timedOut.body.models[0].message, '探测超时');
+      assert.ok(Date.now() - startedAt >= 1500, '探测使用至少 2 秒的超时预算');
+      const unchanged = (await catalogModels({ body: timedOut.body.catalog }, timeoutUpstream.body.id)).get('timeout-model');
+      assert.equal(unchanged.supportsThinking, previous.supportsThinking);
+      assert.deepEqual(unchanged.thinkingLevels, previous.thinkingLevels);
+      assert.equal(unchanged.thinkingProbedAt, previous.thinkingProbedAt);
+      for (let index = 0; index < 100 && openai.timeoutResponses.size; index += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(openai.timeoutResponses.size, 0, '超时必须关闭上游连接');
+      openai.timeoutMode = null;
+      const recovered = await requestJson(timeoutUrl, { method: 'POST', body: '{}', signal: AbortSignal.timeout(6000) });
+      assert.equal(recovered.body.status, 'ok', '超时后不能一直 busy');
+      assert.equal(recovered.body.supported, 1);
+    }
+    const metricsAfterTimeout = await requestJson(`http://127.0.0.1:${gatewayPort}/api/admin/metrics`);
+    assert.deepEqual(metricsAfterTimeout.body.totals, metricsBeforeTimeout.body.totals);
   } finally {
-    gateway.kill();
-    openai.server.close();
-    anthropic.server.close();
+    for (const response of openai.timeoutResponses) response.destroy();
+    if (gateway.exitCode === null && gateway.signalCode === null) {
+      const exited = once(gateway, 'exit');
+      gateway.kill();
+      await exited;
+    }
+    openai.server.closeAllConnections();
+    anthropic.server.closeAllConnections();
+    await Promise.all([new Promise((resolve) => openai.server.close(resolve)), new Promise((resolve) => anthropic.server.close(resolve))]);
+    fs.rmSync(dataDirectory, { recursive: true, force: true });
   }
 }
 
