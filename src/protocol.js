@@ -647,12 +647,20 @@ function normalizeResponsesResponse(input, model, state) {
   return normalizeResponsesIds(result, state);
 }
 
+// 工具参数与结构化输出中的 JSON Schema 是不透明数据；其 properties/$defs/examples
+// 可以合法包含 id/call_id 等同名字段，不能按协议 ID 递归改写（包括布尔 schema）。
+function isJsonSchemaField(key) {
+  return ['parameters', 'input_schema', 'schema', 'json_schema'].includes(key);
+}
+
 function normalizeResponsesIds(value, state = {}, path = 'responses') {
   if (Array.isArray(value)) return value.map((item, index) => normalizeResponsesIds(item, state, `${path}.${index}`));
   if (!value || typeof value !== 'object') return value;
   const result = {};
   for (const [key, item] of Object.entries(value)) {
-    if (key === 'previous_response_id' && item === null) {
+    if (isJsonSchemaField(key)) {
+      result[key] = item;
+    } else if (key === 'previous_response_id' && item === null) {
       result[key] = null;
     } else if (['id', 'call_id', 'item_id', 'response_id', 'previous_response_id'].includes(key)) {
       result[key] = responseId(item, `${key}_${crypto.createHash('sha256').update(`${path}.${key}`).digest('hex').slice(0, 16)}`);
@@ -730,6 +738,7 @@ module.exports = {
   responsesResponseSkeleton,
   textFromContent,
   responseId,
+  isJsonSchemaField,
   responseRequestRequiresNative,
   chatRequestRequiresNative
 };

@@ -97,6 +97,50 @@ function main() {
   assert.equal(typeof JSON.parse(nullData).id, 'string', 'null id 必须被改写为字符串');
   assert.ok(nullDiag.warnings.some((message) => message.includes('$.id')), '应记录 null id 的告警');
 
+  // 输出兜底与协议归一化采用相同边界：schema 内同名字段不是协议 ID。
+  const toolSchema = {
+    type: 'object',
+    properties: { id: { type: 'string' }, call_id: true, item_id: false, response_id: { type: 'integer' }, previous_response_id: { type: 'null' } },
+    $defs: { task: { type: 'object', properties: { id: { type: 'integer' } }, examples: [{ id: 7 }] } }
+  };
+  const schemaTarget = {
+    id: 12345,
+    tools: [
+      { type: 'function', name: 'CronDelete', parameters: toolSchema },
+      { type: 'function', function: { name: 'CronDelete', parameters: toolSchema } },
+      { name: 'CronDelete', input_schema: toolSchema }
+    ],
+    text: { format: { type: 'json_schema', name: 'task_result', schema: toolSchema } },
+    response_format: { type: 'json_schema', json_schema: { name: 'task_result', schema: toolSchema } }
+  };
+  const schemaSnapshot = JSON.parse(JSON.stringify(schemaTarget));
+  const schemaBad = [];
+  scanIds(schemaTarget, '$', schemaBad);
+  assert.deepEqual(schemaBad.map((item) => item.path), ['$.id'], '不能将 schema 属性误报为非字符串 ID');
+  normalizeIdsInPlace(schemaTarget);
+  assert.deepEqual(schemaTarget, { ...schemaSnapshot, id: '12345' });
+
+  for (const id of ['resp_schema', 12345]) {
+    const schemaRes = fakeResponse();
+    const schemaDiag = createDiagnostics();
+    attachOutputCapture(schemaRes, schemaDiag);
+    const event = { type: 'response.completed', response: { ...schemaTarget, id } };
+    const frame = `event: response.completed\r\nid: schema-event\r\ndata: ${JSON.stringify(event)}\r\n\r\n`;
+    schemaRes.write(frame.slice(0, 30));
+    schemaRes.write(frame.slice(30));
+    schemaRes.end();
+    const schemaOutput = schemaRes.__written.join('');
+    const parsed = JSON.parse(schemaOutput.split(/\r?\n/).find((line) => line.startsWith('data:')).slice(5));
+    assert.deepEqual(parsed.response, { ...schemaTarget, id: String(id) });
+    if (typeof id === 'string') {
+      assert.equal(schemaOutput, frame, '只有 schema 属性叫 id 时，SSE 必须逐字透传');
+      assert.deepEqual(schemaDiag.warnings, []);
+    } else {
+      assert.equal(schemaDiag.warnings.length, 1, '仅为真正的数字 response.id 告警');
+      assert.match(schemaDiag.warnings[0], /\$\.response\.id/);
+    }
+  }
+
   // sample 只保留开头若干帧并做总量截断。
   const list = [];
   for (let index = 0; index < 50; index += 1) sample(list, `frame-${index}-padding`.padEnd(50, 'x'));

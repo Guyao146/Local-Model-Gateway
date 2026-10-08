@@ -208,4 +208,82 @@ const parallelMessages = openAIToAnthropic(parallel, 'm');
 assert.equal(parallelMessages.messages.length, 2);
 assert.deepEqual(parallelMessages.messages[1].content.map((item) => item.tool_use_id), ['one', 'two']);
 assert.equal(openAIResponseToResponses({ choices: [{ message: { content: 'partial' }, finish_reason: 'length' }] }, 'm').status, 'incomplete');
+// CronDelete 的 properties.id 是 JSON Schema，不是需要归一化的协议 ID。
+const cronDeleteSchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', description: 'Scheduled task ID' },
+    call_id: { type: ['string', 'null'] },
+    item_id: true,
+    response_id: false,
+    previous_response_id: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    tasks: { type: 'array', items: { $ref: '#/$defs/task' } }
+  },
+  required: ['id'],
+  additionalProperties: false,
+  $defs: {
+    id: { type: 'string' },
+    task: { type: 'object', properties: { id: { type: 'integer' } }, examples: [{ id: 7, call_id: null }] }
+  }
+};
+const cronDeleteTool = { type: 'function', name: 'CronDelete', parameters: cronDeleteSchema };
+const cronDeleteFormat = { type: 'json_schema', name: 'task_result', schema: cronDeleteSchema };
+const cronDeleteRequest = {
+  input: [{ type: 'function_call', id: null, call_id: 42, name: 'CronDelete', arguments: '{"id":"task-1"}' }],
+  previous_response_id: null,
+  // 第 5 个工具的 properties.id 曾被改成报错中的 id_5758bcd62951c1b9。
+  tools: [...Array.from({ length: 4 }, (_, index) => ({ type: 'function', name: `other_${index}`, parameters: { type: 'object', properties: {} } })), cronDeleteTool],
+  text: { format: cronDeleteFormat }
+};
+const originalCronDeleteRequest = JSON.parse(JSON.stringify(cronDeleteRequest));
+const normalizedCronDelete = normalizeResponsesIds(cronDeleteRequest);
+assert.deepEqual(normalizedCronDelete.tools, cronDeleteRequest.tools);
+assert.deepEqual(normalizedCronDelete.text, cronDeleteRequest.text);
+assert.equal(typeof normalizedCronDelete.input[0].id, 'string');
+assert.equal(normalizedCronDelete.input[0].call_id, '42');
+assert.equal(normalizedCronDelete.input[0].arguments, '{"id":"task-1"}');
+assert.equal(normalizedCronDelete.previous_response_id, null);
+assert.deepEqual(cronDeleteRequest, originalCronDeleteRequest, '归一化不能修改客户端原始请求');
+
+// 所有 schema 入口整棵保留，包括旧 Chat 格式、Anthropic/MCP 工具和结构化输出。
+for (const key of ['parameters', 'input_schema', 'schema', 'json_schema']) {
+  const normalized = normalizeResponsesIds({ id: 7, nested: { [key]: cronDeleteSchema } });
+  assert.equal(normalized.id, '7');
+  assert.deepEqual(normalized.nested[key], cronDeleteSchema, `${key} 中的对象和布尔 schema 必须原样保留`);
+}
+const cronDeleteChat = {
+  messages: [{ role: 'user', content: 'Delete the scheduled task' }],
+  tools: [{ type: 'function', function: { name: 'CronDelete', parameters: cronDeleteSchema } }],
+  response_format: { type: 'json_schema', json_schema: { name: 'task_result', schema: cronDeleteSchema } }
+};
+const cronDeleteAnthropic = anthropicToOpenAI({
+  messages: cronDeleteChat.messages,
+  tools: [{ name: 'CronDelete', input_schema: cronDeleteSchema }]
+}, 'gpt-6-astra');
+for (const input of [cronDeleteChat, cronDeleteAnthropic]) {
+  const normalized = normalizeResponsesIds(openAIRequestToResponses(input, 'gpt-6-astra'));
+  assert.deepEqual(normalized.tools[0].parameters, cronDeleteSchema);
+  if (input.response_format) assert.deepEqual(normalized.text.format, cronDeleteFormat);
+}
+
+// 上游回显的工具定义和结构化输出 schema 也不能在 JSON/SSE 响应中被改写。
+const responseWithSchema = {
+  id: 123,
+  tools: [cronDeleteTool],
+  text: { format: cronDeleteFormat },
+  output: [{ type: 'function_call', id: 456, call_id: 789, name: 'CronDelete', arguments: '{"id":"task-1"}' }]
+};
+const normalizedSchemaResponse = normalizeResponsesResponse(responseWithSchema, 'gpt-6-astra');
+assert.deepEqual(normalizedSchemaResponse.tools, responseWithSchema.tools);
+assert.deepEqual(normalizedSchemaResponse.text, responseWithSchema.text);
+assert.equal(normalizedSchemaResponse.id, '123');
+assert.equal(normalizedSchemaResponse.output[0].id, '456');
+assert.equal(normalizedSchemaResponse.output[0].call_id, '789');
+for (const type of ['response.created', 'response.completed', 'response.incomplete']) {
+  const event = normalizeResponsesEvent({ type, response: responseWithSchema }, {});
+  assert.deepEqual(event.response.tools, responseWithSchema.tools);
+  assert.deepEqual(event.response.text, responseWithSchema.text);
+  assert.equal(event.response.id, '123');
+  assert.equal(event.response.output[0].call_id, '789');
+}
 console.log('protocol tests passed');

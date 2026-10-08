@@ -1,5 +1,5 @@
 const { createHash } = require('node:crypto');
-const { responseId } = require('./protocol');
+const { responseId, isJsonSchemaField } = require('./protocol');
 
 // 客户端（Codex 等严格反序列化的 SDK）要求 id/call_id 等字段必须是字符串。
 // 上游有时返回数字、null 或对象，网关在输出前统一归一化，并把“修过哪里”记进日志。
@@ -60,7 +60,7 @@ function fallbackId(key, path) {
   return `${key}_${createHash('sha256').update(`${path}.${key}`).digest('hex').slice(0, 16)}`;
 }
 
-// 递归找出所有“存在但不是字符串”的 id 类字段。
+// 递归找出协议中的非字符串 ID；schema 内的属性定义不属于协议 ID。
 function scanIds(value, path, bad) {
   if (Array.isArray(value)) {
     for (let index = 0; index < value.length; index += 1) scanIds(value[index], `${path}[${index}]`, bad);
@@ -68,6 +68,7 @@ function scanIds(value, path, bad) {
   }
   if (value && typeof value === 'object') {
     for (const [key, item] of Object.entries(value)) {
+      if (isJsonSchemaField(key)) continue;
       const childPath = `${path}.${key}`;
       if (isBadIdValue(key, item)) bad.push({ path: childPath, value: item });
       scanIds(item, childPath, bad);
@@ -83,6 +84,7 @@ function normalizeIdsInPlace(value, path = 'root') {
   }
   if (value && typeof value === 'object') {
     for (const key of Object.keys(value)) {
+      if (isJsonSchemaField(key)) continue;
       if (isBadIdValue(key, value[key])) {
         value[key] = responseId(value[key], fallbackId(key, path));
       }

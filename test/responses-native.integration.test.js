@@ -101,6 +101,18 @@ async function main() {
       res.end(JSON.stringify({ error: { message: '调用的接口类型和传入的参数不匹配：/v1/responses 不支持 reasoning_effort' } }));
       return;
     }
+    // 模拟上游 schema 校验，禁止将 properties.id 等子 schema 改成字符串。
+    for (const tool of body.tools || []) {
+      if (tool.type !== 'function') continue;
+      for (const schema of Object.values(tool.parameters?.properties || {})) {
+        if (typeof schema === 'boolean' || (schema && typeof schema === 'object' && !Array.isArray(schema))) continue;
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: { type: 'invalid_request_error', code: 'invalid_function_parameters',
+          message: `Invalid schema for function '${tool.name}': '${schema}' is not of type 'object', 'boolean'` } }));
+        return;
+      }
+    }
     res.setHeader('Content-Type', body.stream ? 'text/event-stream' : 'application/json');
     if (rejectNativeResponses) {
       res.statusCode = 404;
@@ -237,6 +249,92 @@ async function main() {
       body: JSON.stringify({ localModel: 'chat-native', upstreamId: added.json.id, upstreamModel: 'native-agent-model', responsesMode: 'native' })
     });
     assert.equal(nativeRoute.status, 201);
+    // zcode/CronDelete 回归：三个客户端协议、JSON/SSE 都必须保留工具 schema。
+    const cronSchema = {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Scheduled task ID' },
+        tasks: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, call_id: { type: 'string' } } } }
+      },
+      required: ['id'],
+      additionalProperties: false
+    };
+    const cronTools = [
+      ...Array.from({ length: 4 }, (_, index) => ({ type: 'function', name: `other_${index}`, parameters: { type: 'object', properties: {} } })),
+      { type: 'function', name: 'CronDelete', parameters: cronSchema }
+    ];
+    const cronText = { format: { type: 'json_schema', name: 'task_result', schema: cronSchema } };
+    const cronCall = { type: 'function_call', id: 601, call_id: 602, name: 'CronDelete', arguments: '{"id":"task-1"}' };
+    const cronResponse = { id: 600, object: 'response', status: 'completed', tools: cronTools, text: cronText, output: [cronCall] };
+    customJson = { status: 200, body: cronResponse };
+    customFrames = [
+      { type: 'response.created', response: { ...cronResponse, status: 'in_progress', output: [] } },
+      { type: 'response.output_item.added', output_index: 0, item: { ...cronCall, arguments: '' } },
+      { type: 'response.function_call_arguments.delta', output_index: 0, item_id: 601, delta: cronCall.arguments },
+      { type: 'response.output_item.done', output_index: 0, item: cronCall },
+      { type: 'response.completed', response: cronResponse }
+    ];
+    const cronMessages = [{ role: 'user', content: 'Delete the scheduled task' }];
+    const cronRequests = [
+      { endpoint: 'responses', body: { input: 'Delete the scheduled task', tools: cronTools, text: cronText, previous_response_id: null } },
+      { endpoint: 'chat/completions', body: {
+        messages: cronMessages,
+        tools: cronTools.map(({ type, ...tool }) => ({ type, function: tool })),
+        response_format: { type: 'json_schema', json_schema: { name: 'task_result', schema: cronSchema } }
+      } },
+      { endpoint: 'messages', body: {
+        messages: cronMessages, max_tokens: 64,
+        tools: cronTools.map((tool) => ({ name: tool.name, input_schema: tool.parameters }))
+      } }
+    ];
+    for (const { endpoint, body } of cronRequests) {
+      for (const stream of [false, true]) {
+        const before = received.length;
+        const result = await request(`http://127.0.0.1:${gatewayPort}/v1/${endpoint}`, {
+          method: 'POST', headers: { ...localHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'chat-native', ...body, stream })
+        });
+        assert.equal(result.status, 200, `${endpoint}, stream=${stream}: ${result.body}`);
+        const calls = received.slice(before);
+        assert.equal(calls.length, 1, 'schema 合法时不应触发回退或重试');
+        assert.equal(calls[0].url, '/v1/responses');
+        assert.deepEqual(calls[0].body.tools, cronTools, `${endpoint} 转发的 schema 必须完整保留`);
+        if (endpoint !== 'messages') assert.deepEqual(calls[0].body.text, cronText);
+        assert.match(result.body, /CronDelete/);
+        if (stream) {
+          const events = parseSse(result.body);
+          assert.ok(events.length > 0);
+          assert.ok(events.every((event) => !event.json.error), result.body);
+          if (endpoint === 'responses') {
+            for (const type of ['response.created', 'response.completed']) {
+              const event = events.find((item) => item.json.type === type);
+              assert.ok(event, result.body);
+              assert.deepEqual(event.json.response.tools, cronTools);
+              assert.deepEqual(event.json.response.text, cronText);
+              assert.equal(event.json.response.id, '600');
+            }
+            const completed = events.find((event) => event.json.type === 'response.completed').json.response;
+            assert.equal(completed.output[0].id, '601');
+            assert.equal(completed.output[0].call_id, '602');
+          }
+        } else {
+          const json = JSON.parse(result.body);
+          if (endpoint === 'responses') {
+            assert.deepEqual(json.tools, cronTools);
+            assert.deepEqual(json.text, cronText);
+            assert.equal(json.id, '600');
+            assert.equal(json.output[0].id, '601');
+            assert.equal(json.output[0].call_id, '602');
+          } else if (endpoint === 'chat/completions') {
+            assert.equal(json.choices[0].message.tool_calls[0].id, '602');
+          } else {
+            assert.equal(json.content[0].id, '602');
+          }
+        }
+      }
+    }
+    customJson = null;
+    customFrames = null;
     const chatFunctionResponse = await requestJson(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
       method: 'POST',
       headers: localHeaders,
